@@ -34,7 +34,7 @@ class DRMVideoPlayer {
             return;
         }
         
-        // Install polyfills (IMPORTANT!)
+        // Install polyfills
         if (window.shaka.polyfill) {
             window.shaka.polyfill.installAll();
             this.log('Shaka polyfills installed');
@@ -48,7 +48,7 @@ class DRMVideoPlayer {
         
         this.player = new window.shaka.Player(this.videoElement);
         
-        // EXACT DRM CONFIGURATION FROM ORIGINAL SITE
+        // Configure DRM with license server
         this.player.configure({
             drm: {
                 servers: {
@@ -73,10 +73,6 @@ class DRMVideoPlayer {
                     baseDelay: 1000,
                     backoffFactor: 2
                 }
-            },
-            abr: {
-                enabled: true,
-                defaultBandwidthEstimate: 1e6
             }
         });
         
@@ -118,7 +114,6 @@ class DRMVideoPlayer {
         this.playerContainer.style.display = 'none';
         
         try {
-            // Fetch video details
             const response = await fetch(apiUrl);
             const data = await response.json();
             
@@ -139,10 +134,7 @@ class DRMVideoPlayer {
             this.log(`MPD URL: ${mpdUrl}`);
             this.log(`Token: ${token.substring(0, 50)}...`);
             
-            // Update video info
             this.updateVideoInfo(videoData);
-            
-            // Play video with token
             await this.playVideo(mpdUrl, token);
             
         } catch (error) {
@@ -154,48 +146,43 @@ class DRMVideoPlayer {
         this.updateStatus('loading', 'Loading DRM video...');
         
         try {
-            // IMPORTANT: Add token to license requests (EXACTLY LIKE ORIGINAL SITE)
             const netEngine = this.player.getNetworkingEngine();
-            
-            // Clear previous filters
             netEngine.clearAllRequestFilters();
             
-            // Register request filter for license requests
+            // EXACT REQUEST FILTER FROM ORIGINAL SITE
             netEngine.registerRequestFilter((type, request) => {
-                // THIS IS THE KEY — original site uses this header
                 if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
                     this.log('🔐 Adding token to license request');
-                    // EXACT header from original site
+                    this.log('License URL:', request.uris[0]);
+                    
+                    // EXACT HEADER from original site
                     request.headers['pallycon-customdata-v2'] = token;
-                    // Additional headers for compatibility
-                    request.headers['Authorization'] = `Bearer ${token}`;
-                    request.headers['X-Token'] = token;
+                    
+                    // Additional headers for CORS (matches original)
+                    request.headers['Origin'] = window.location.origin;
+                    request.headers['X-Requested-With'] = 'XMLHttpRequest';
+                    
+                    // Log the request for debugging
+                    this.log('Headers set:', Object.keys(request.headers));
                 }
             });
             
-            // Try to load with token in URL
+            // Load MPD with token in URL
             const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-            this.log(`Loading MPD with token...`);
+            this.log(`Loading MPD...`);
             
-            // Load the video
             await this.player.load(urlWithToken);
             
-            // Show player
             this.playerContainer.style.display = 'block';
             this.updateStatus('success', 'Video loaded! Playing...');
             
-            // Auto-play with mute fallback
+            // Auto-play
             this.videoElement.play().catch(e => {
                 this.log('Auto-play blocked, trying muted...');
                 this.videoElement.muted = true;
                 this.videoElement.play().catch(err => {
                     this.log('Auto-play failed, click play button');
                 });
-            });
-            
-            // Track playback
-            this.videoElement.addEventListener('playing', () => {
-                this.updateStatus('success', 'Video playing');
             });
             
         } catch (error) {
@@ -212,26 +199,16 @@ class DRMVideoPlayer {
         let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
         
         switch(errorCode) {
-            case 1000:
-                errorMessage = 'Network error - Check connection';
-                break;
-            case 1001:
-                errorMessage = 'MPD file not accessible';
-                break;
-            case 1002:
-                errorMessage = 'Invalid MPD format';
-                break;
-            case 2000:
             case 6007:
-                errorMessage = 'License request failed - Token may be expired';
+                errorMessage = 'License request failed - Token may be expired or invalid';
                 this.log('💡 Check if token is valid');
+                this.log('💡 Verify license server is accessible: ' + this.licenseServerUrl);
                 break;
             case 6012:
                 errorMessage = 'License server not configured';
-                this.log(`💡 License server: ${this.licenseServerUrl}`);
                 break;
-            case 6010:
-                errorMessage = 'DRM session error - Missing PSSH';
+            case 1002:
+                errorMessage = 'Network error - Check CORS or server availability';
                 break;
             default:
                 errorMessage = error.detail?.message || error.message || 'Unknown error';
@@ -245,7 +222,7 @@ class DRMVideoPlayer {
             <div style="display: grid; gap: 8px;">
                 <div><strong>🎬 MPD URL:</strong><br>${this.truncateUrl(videoData.file_url, 80)}</div>
                 <div><strong>🔑 License Server:</strong><br>${this.licenseServerUrl}</div>
-                <div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 50)}...</div>
+                <div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 60)}...</div>
                 <div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
                      <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
                      <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>
@@ -295,13 +272,11 @@ class DRMVideoPlayer {
     }
 }
 
-// Wait for Shaka Player to load
+// Initialize
 window.addEventListener('DOMContentLoaded', () => {
-    // Check if Shaka is loaded
     if (window.shaka) {
         window.drmPlayer = new DRMVideoPlayer();
     } else {
-        // Load Shaka Player dynamically
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.13/shaka-player.compiled.js';
         script.onload = () => {

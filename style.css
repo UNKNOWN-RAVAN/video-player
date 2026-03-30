@@ -177,3 +177,236 @@ pre {
         padding: 20px;
     }
 }
+/* Add to existing style.css */
+
+.btn-download {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.btn-download:hover {
+    transform: translateY(-2px);
+}
+
+.quality-selector-download {
+    padding: 15px 30px;
+    background: #f0fdf4;
+    border-bottom: 1px solid #d1fae5;
+}
+
+.quality-selector-download h4 {
+    margin-bottom: 10px;
+    color: #065f46;
+}
+
+.quality-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.quality-btn {
+    padding: 8px 16px;
+    background: white;
+    border: 2px solid #10b981;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.quality-btn:hover {
+    background: #10b981;
+    color: white;
+}
+
+.quality-btn.selected {
+    background: #10b981;
+    color: white;
+}
+
+.download-manager {
+    background: #1f2937;
+    color: white;
+    border-top: 1px solid #374151;
+    border-bottom: 1px solid #374151;
+}
+
+.download-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: #111827;
+    border-bottom: 1px solid #374151;
+}
+
+.download-header h3 {
+    font-size: 16px;
+    margin: 0;
+}
+
+.clear-btn {
+    background: #ef4444;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.download-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.empty-downloads {
+    text-align: center;
+    padding: 30px;
+    color: #9ca3af;
+}
+
+.download-item {
+    padding: 12px 20px;
+    border-bottom: 1px solid #374151;
+    transition: background 0.2s;
+}
+
+.download-item:hover {
+    background: #2d3748;
+}
+
+.download-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.download-filename {
+    font-size: 13px;
+    font-weight: 500;
+    flex: 1;
+    word-break: break-all;
+}
+
+.download-size {
+    font-size: 11px;
+    color: #9ca3af;
+    font-family: monospace;
+}
+
+.download-progress-bar {
+    background: #374151;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.download-progress-fill {
+    background: linear-gradient(90deg, #10b981, #34d399);
+    height: 100%;
+    width: 0%;
+    transition: width 0.3s;
+}
+
+.download-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #9ca3af;
+}
+
+.download-speed {
+    color: #10b981;
+}
+
+.download-status {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: #374151;
+}
+
+.download-status.completed {
+    background: #10b981;
+    color: white;
+}
+
+.download-status.failed {
+    background: #ef4444;
+    color: white;
+}
+
+.download-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.download-action-btn {
+    background: transparent;
+    border: 1px solid #4b5563;
+    color: #9ca3af;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: all 0.2s;
+}
+
+.download-action-btn:hover {
+    background: #4b5563;
+    color: white;
+}
+
+.download-action-btn.danger:hover {
+    background: #ef4444;
+    border-color: #ef4444;
+}
+
+/* Notification */
+.notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: #1f2937;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+    z-index: 10000;
+    animation: slideIn 0.3s ease;
+    max-width: 300px;
+}
+
+.notification.success {
+    border-left: 4px solid #10b981;
+}
+
+.notification.error {
+    border-left: 4px solid #ef4444;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}

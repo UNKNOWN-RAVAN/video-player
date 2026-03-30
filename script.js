@@ -9,29 +9,23 @@ class DRMVideoPlayer {
         this.statusIcon = document.querySelector('.status-icon');
         this.debugLog = document.getElementById('debugLog');
         this.videoInfo = document.getElementById('videoInfo');
+        this.mpdData = null;
         
         this.init();
     }
     
     init() {
-        // Initialize Shaka Player
         this.initShakaPlayer();
-        
-        // Add event listeners
         this.loadBtn.addEventListener('click', () => this.loadVideo());
-        
-        // Add enter key support
         this.apiUrlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.loadVideo();
         });
-        
         this.log('Player initialized. Ready to load video.');
     }
     
     initShakaPlayer() {
         if (!this.videoElement) return;
         
-        // Check if browser supports DRM
         if (!window.shaka) {
             this.updateStatus('error', 'Shaka Player not loaded');
             return;
@@ -39,17 +33,21 @@ class DRMVideoPlayer {
         
         this.player = new shaka.Player(this.videoElement);
         
-        // Configure DRM settings
+        // Advanced DRM configuration
         this.player.configure({
             drm: {
                 servers: {
-                    'com.widevine.alpha': 'https://widevine-proxy.appspot.com/proxy' // Default, will be updated from MPD
+                    'com.widevine.alpha': '' // Will be set dynamically
                 },
+                clearKeys: {},
+                advanced: {},
                 retryParameters: {
                     maxAttempts: 5,
                     baseDelay: 1000,
                     backoffFactor: 2
-                }
+                },
+                // Custom license request headers
+                headers: {}
             },
             streaming: {
                 rebufferingGoal: 2,
@@ -58,16 +56,33 @@ class DRMVideoPlayer {
                     maxAttempts: 5,
                     baseDelay: 1000,
                     backoffFactor: 2
+                },
+                // Allow cross-origin credentials
+                useNativeHlsOnSafari: false
+            },
+            manifest: {
+                dash: {
+                    clockSyncUri: '',
+                    ignoreMinBufferTime: false,
+                    defaultPresentationDelay: 0,
+                    xlinkFailGracefully: true
+                }
+            },
+            networking: {
+                retryParameters: {
+                    maxAttempts: 5,
+                    baseDelay: 1000,
+                    backoffFactor: 2
                 }
             }
         });
         
-        // Add error handler
+        // Add error handler with detailed info
         this.player.addEventListener('error', (event) => {
-            this.handleError(event.detail);
+            this.handleShakaError(event.detail);
         });
         
-        // Add event listeners for debugging
+        // Add event listeners
         this.player.addEventListener('buffering', () => {
             this.log('Buffering...');
         });
@@ -84,7 +99,18 @@ class DRMVideoPlayer {
             }
         });
         
-        this.log('Shaka Player initialized successfully');
+        // Listen for DRM info
+        this.player.getNetworkingEngine().registerRequestFilter((type, request) => {
+            if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                this.log('License request detected');
+                this.log('License URL:', request.uris[0]);
+                if (request.headers) {
+                    this.log('License headers:', request.headers);
+                }
+            }
+        });
+        
+        this.log('Shaka Player initialized');
     }
     
     async loadVideo() {
@@ -99,7 +125,6 @@ class DRMVideoPlayer {
         this.playerContainer.style.display = 'none';
         
         try {
-            // Fetch video details
             const response = await fetch(apiUrl);
             const data = await response.json();
             
@@ -120,10 +145,13 @@ class DRMVideoPlayer {
             this.log(`MPD URL: ${mpdUrl}`);
             this.log(`Token: ${token.substring(0, 50)}...`);
             
+            // First fetch and parse MPD to extract license URL and PSSH
+            await this.fetchAndParseMPD(mpdUrl, token);
+            
             // Update video info
             this.updateVideoInfo(videoData);
             
-            // Load video with token
+            // Load video
             await this.playVideo(mpdUrl, token);
             
         } catch (error) {
@@ -131,52 +159,211 @@ class DRMVideoPlayer {
         }
     }
     
+    async fetchAndParseMPD(mpdUrl, token) {
+        try {
+            const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+            this.log('Fetching MPD:', urlWithToken);
+            
+            const response = await fetch(urlWithToken);
+            const mpdText = await response.text();
+            
+            this.log('MPD fetched, parsing...');
+            
+            // Parse MPD XML
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(mpdText, 'text/xml');
+            
+            // Extract ContentProtection info
+            const contentProtection = xmlDoc.getElementsByTagName('ContentProtection');
+            this.log(`Found ${contentProtection.length} ContentProtection elements`);
+            
+            let licenseUrl = null;
+            let pssh = null;
+            
+            for (let i = 0; i < contentProtection.length; i++) {
+                const cp = contentProtection[i];
+                const schemeIdUri = cp.getAttribute('schemeIdUri');
+                
+                this.log(`ContentProtection ${i}: schemeIdUri=${schemeIdUri}`);
+                
+                // Check for Widevine
+                if (schemeIdUri === 'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed') {
+                    // Extract PSSH from cenc:pssh
+                    const psshElement = cp.getElementsByTagName('cenc:pssh')[0];
+                    if (psshElement) {
+                        pssh = psshElement.textContent;
+                        this.log(`Found Widevine PSSH: ${pssh.substring(0, 50)}...`);
+                    }
+                }
+                
+                // Look for license URL in various places
+                const laUrl = cp.getElementsByTagName('ms:laurl')[0] || 
+                             cp.getElementsByTagName('dashif:laurl')[0] ||
+                             cp.getElementsByTagName('LicenseUrl')[0];
+                
+                if (laUrl) {
+                    licenseUrl = laUrl.getAttribute('licenseUrl') || laUrl.textContent;
+                    this.log(`Found license URL: ${licenseUrl}`);
+                }
+            }
+            
+            // Check for common license URL locations in MPD
+            if (!licenseUrl) {
+                const location = xmlDoc.getElementsByTagName('Location');
+                if (location.length > 0) {
+                    licenseUrl = location[0].textContent;
+                    this.log(`Found Location: ${licenseUrl}`);
+                }
+            }
+            
+            // Store for later use
+            this.mpdData = {
+                licenseUrl: licenseUrl,
+                pssh: pssh,
+                mpdXml: mpdText
+            };
+            
+            // If we found license URL, configure DRM
+            if (licenseUrl) {
+                this.log(`Configuring DRM with license URL: ${licenseUrl}`);
+                this.player.configure({
+                    drm: {
+                        servers: {
+                            'com.widevine.alpha': licenseUrl
+                        }
+                    }
+                });
+            } else {
+                this.log('No license URL found in MPD, will try to extract from player_params');
+            }
+            
+            // Log full MPD structure for debugging
+            this.log('MPD structure:', {
+                rootElement: xmlDoc.documentElement.nodeName,
+                contentProtectionCount: contentProtection.length,
+                hasLicenseUrl: !!licenseUrl,
+                hasPSSH: !!pssh
+            });
+            
+        } catch (error) {
+            this.log('Error parsing MPD:', error);
+            // Continue anyway, maybe player will handle
+        }
+    }
+    
     async playVideo(mpdUrl, token) {
         this.updateStatus('loading', 'Loading video stream...');
         
         try {
-            // Construct URL with token
+            // Try different methods to pass token
             const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
             
-            this.log(`Loading MPD with token: ${urlWithToken}`);
+            // Configure networking to add token to all requests
+            const netEngine = this.player.getNetworkingEngine();
             
-            // Load the video
+            // Add request filter to inject token in headers
+            netEngine.registerRequestFilter((type, request) => {
+                // Add token to all requests
+                request.headers['Authorization'] = `Bearer ${token}`;
+                request.headers['X-Token'] = token;
+                
+                if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                    this.log('Sending license request with token');
+                    // Add token to license request body if needed
+                    if (request.body && this.mpdData && this.mpdData.pssh) {
+                        try {
+                            const body = JSON.parse(request.body);
+                            body.token = token;
+                            request.body = JSON.stringify(body);
+                        } catch(e) {
+                            // If not JSON, add as form data
+                            if (request.body instanceof ArrayBuffer) {
+                                const str = new TextDecoder().decode(request.body);
+                                request.body = new TextEncoder().encode(str + `&token=${token}`);
+                            }
+                        }
+                    }
+                }
+            });
+            
+            this.log('Loading MPD with token in URL and headers');
+            
+            // Try to load
             await this.player.load(urlWithToken);
             
-            // Show player container
             this.playerContainer.style.display = 'block';
-            
             this.updateStatus('success', 'Video loaded successfully! Playing...');
             
-            // Auto-play if possible
+            // Try to autoplay
             this.videoElement.play().catch(e => {
-                this.log('Auto-play failed, user interaction needed');
+                this.log('Auto-play blocked, user interaction needed');
             });
             
         } catch (error) {
-            // Try alternative method - some servers need token in headers
-            this.log('Trying alternative loading method...');
+            // If fails, try without token in URL
+            this.log('First method failed, trying without URL token...');
             
             try {
-                // Configure with custom headers for token
-                this.player.configure({
-                    networking: {
-                        beforeRequestHeaders: (headers, requestType) => {
-                            if (requestType === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                                headers['Authorization'] = `Bearer ${token}`;
-                            }
-                            return headers;
-                        }
-                    }
-                });
-                
                 await this.player.load(mpdUrl);
                 this.playerContainer.style.display = 'block';
-                this.updateStatus('success', 'Video loaded with header auth!');
-                
+                this.updateStatus('success', 'Video loaded with header auth only!');
             } catch (altError) {
                 throw new Error(`Failed to load video: ${altError.message}`);
             }
+        }
+    }
+    
+    handleShakaError(error) {
+        this.log('Shaka Error:', error);
+        
+        let errorMessage = '';
+        let errorCode = '';
+        
+        if (error && error.detail) {
+            const detail = error.detail;
+            errorCode = detail.code || 'Unknown';
+            
+            switch(errorCode) {
+                case 1000:
+                    errorMessage = 'Network error - Check your internet connection';
+                    break;
+                case 1001:
+                    errorMessage = 'Manifest request failed - MPD file not accessible';
+                    break;
+                case 1002:
+                    errorMessage = 'Manifest parse failed - Invalid MPD format';
+                    break;
+                case 2000:
+                    errorMessage = 'DRM license server error - License request failed';
+                    break;
+                case 6007:
+                    errorMessage = 'DRM license request failed - Check token and license server';
+                    this.log('Possible issues:');
+                    this.log('- License server URL not found in MPD');
+                    this.log('- Token expired or invalid');
+                    this.log('- CORS issues with license server');
+                    this.log('- Widevine not supported in this browser');
+                    break;
+                case 6010:
+                    errorMessage = 'DRM session not created - Missing PSSH data';
+                    break;
+                default:
+                    errorMessage = `Error ${errorCode}: ${detail.message || 'Unknown error'}`;
+            }
+        } else {
+            errorMessage = error.message || 'Unknown error';
+        }
+        
+        this.updateStatus('error', `Shaka Error ${errorCode}: ${errorMessage}`);
+        
+        // Suggest solutions
+        if (errorCode === 6007) {
+            this.log('\n💡 SOLUTIONS:');
+            this.log('1. Check if token is still valid');
+            this.log('2. Verify license server URL is accessible');
+            this.log('3. Try with Chrome browser (best Widevine support)');
+            this.log('4. Check if the video URL is still active');
+            this.log('5. Open browser console for more details');
         }
     }
     
@@ -208,7 +395,6 @@ class DRMVideoPlayer {
         this.statusIcon.textContent = icons[type] || 'ℹ️';
         this.statusDiv.textContent = message;
         
-        // Update status color
         const statusContainer = document.querySelector('.status');
         statusContainer.style.borderLeftColor = type === 'error' ? '#dc3545' : 
                                                type === 'success' ? '#28a745' : '#667eea';
@@ -216,24 +402,9 @@ class DRMVideoPlayer {
     
     handleError(error) {
         console.error('Error:', error);
-        
-        let errorMessage = 'Unknown error';
-        
-        if (error instanceof Error) {
-            errorMessage = error.message;
-        } else if (typeof error === 'object' && error.message) {
-            errorMessage = error.message;
-        } else if (typeof error === 'string') {
-            errorMessage = error;
-        }
-        
+        let errorMessage = error instanceof Error ? error.message : String(error);
         this.updateStatus('error', `Error: ${errorMessage}`);
         this.log('ERROR:', errorMessage);
-        
-        // Show detailed error
-        if (error.detail) {
-            this.log('Detailed error:', error.detail);
-        }
     }
     
     log(...args) {
@@ -244,11 +415,9 @@ class DRMVideoPlayer {
         
         console.log(logMessage);
         
-        // Add to debug panel
         const currentLog = this.debugLog.textContent;
         this.debugLog.textContent = currentLog + '\n' + logMessage;
         
-        // Keep last 100 lines
         const lines = this.debugLog.textContent.split('\n');
         if (lines.length > 100) {
             this.debugLog.textContent = lines.slice(-100).join('\n');
@@ -261,7 +430,7 @@ class DRMVideoPlayer {
     }
 }
 
-// Initialize player when page loads
+// Initialize
 window.addEventListener('DOMContentLoaded', () => {
     window.drmPlayer = new DRMVideoPlayer();
 });

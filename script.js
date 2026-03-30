@@ -9,7 +9,9 @@ class DRMVideoPlayer {
         this.statusIcon = document.querySelector('.status-icon');
         this.debugLog = document.getElementById('debugLog');
         this.videoInfo = document.getElementById('videoInfo');
-        this.mpdData = null;
+        
+        // License server URL — TU NE JO DIYA
+        this.licenseServerUrl = 'https://license.videocrypt.com/validateLicense';
         
         this.init();
     }
@@ -21,6 +23,7 @@ class DRMVideoPlayer {
             if (e.key === 'Enter') this.loadVideo();
         });
         this.log('Player initialized. Ready to load video.');
+        this.log(`License server configured: ${this.licenseServerUrl}`);
     }
     
     initShakaPlayer() {
@@ -33,21 +36,21 @@ class DRMVideoPlayer {
         
         this.player = new shaka.Player(this.videoElement);
         
-        // Advanced DRM configuration
+        // IMPORTANT: Configure DRM with license server
         this.player.configure({
             drm: {
                 servers: {
-                    'com.widevine.alpha': '' // Will be set dynamically
+                    'com.widevine.alpha': this.licenseServerUrl
                 },
-                clearKeys: {},
-                advanced: {},
                 retryParameters: {
                     maxAttempts: 5,
                     baseDelay: 1000,
                     backoffFactor: 2
                 },
-                // Custom license request headers
-                headers: {}
+                // Custom headers for license request
+                headers: {
+                    'Content-Type': 'application/octet-stream'
+                }
             },
             streaming: {
                 rebufferingGoal: 2,
@@ -56,33 +59,22 @@ class DRMVideoPlayer {
                     maxAttempts: 5,
                     baseDelay: 1000,
                     backoffFactor: 2
-                },
-                // Allow cross-origin credentials
-                useNativeHlsOnSafari: false
+                }
             },
             manifest: {
                 dash: {
-                    clockSyncUri: '',
                     ignoreMinBufferTime: false,
-                    defaultPresentationDelay: 0,
-                    xlinkFailGracefully: true
-                }
-            },
-            networking: {
-                retryParameters: {
-                    maxAttempts: 5,
-                    baseDelay: 1000,
-                    backoffFactor: 2
+                    defaultPresentationDelay: 0
                 }
             }
         });
         
-        // Add error handler with detailed info
+        // Error handler
         this.player.addEventListener('error', (event) => {
             this.handleShakaError(event.detail);
         });
         
-        // Add event listeners
+        // Event listeners for debugging
         this.player.addEventListener('buffering', () => {
             this.log('Buffering...');
         });
@@ -99,18 +91,27 @@ class DRMVideoPlayer {
             }
         });
         
-        // Listen for DRM info
-        this.player.getNetworkingEngine().registerRequestFilter((type, request) => {
-            if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                this.log('License request detected');
-                this.log('License URL:', request.uris[0]);
-                if (request.headers) {
+        // Monitor network requests
+        const netEngine = this.player.getNetworkingEngine();
+        if (netEngine) {
+            netEngine.registerRequestFilter((type, request) => {
+                if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                    this.log('🔐 License request to:', request.uris[0]);
                     this.log('License headers:', request.headers);
                 }
-            }
-        });
+            });
+            
+            netEngine.registerResponseFilter((type, response) => {
+                if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                    this.log('✅ License response received');
+                    if (response.data) {
+                        this.log(`Response size: ${response.data.byteLength} bytes`);
+                    }
+                }
+            });
+        }
         
-        this.log('Shaka Player initialized');
+        this.log('Shaka Player initialized with license server');
     }
     
     async loadVideo() {
@@ -125,6 +126,7 @@ class DRMVideoPlayer {
         this.playerContainer.style.display = 'none';
         
         try {
+            // Fetch video details
             const response = await fetch(apiUrl);
             const data = await response.json();
             
@@ -145,13 +147,10 @@ class DRMVideoPlayer {
             this.log(`MPD URL: ${mpdUrl}`);
             this.log(`Token: ${token.substring(0, 50)}...`);
             
-            // First fetch and parse MPD to extract license URL and PSSH
-            await this.fetchAndParseMPD(mpdUrl, token);
-            
             // Update video info
             this.updateVideoInfo(videoData);
             
-            // Load video
+            // Play video with token
             await this.playVideo(mpdUrl, token);
             
         } catch (error) {
@@ -159,154 +158,75 @@ class DRMVideoPlayer {
         }
     }
     
-    async fetchAndParseMPD(mpdUrl, token) {
-        try {
-            const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-            this.log('Fetching MPD:', urlWithToken);
-            
-            const response = await fetch(urlWithToken);
-            const mpdText = await response.text();
-            
-            this.log('MPD fetched, parsing...');
-            
-            // Parse MPD XML
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(mpdText, 'text/xml');
-            
-            // Extract ContentProtection info
-            const contentProtection = xmlDoc.getElementsByTagName('ContentProtection');
-            this.log(`Found ${contentProtection.length} ContentProtection elements`);
-            
-            let licenseUrl = null;
-            let pssh = null;
-            
-            for (let i = 0; i < contentProtection.length; i++) {
-                const cp = contentProtection[i];
-                const schemeIdUri = cp.getAttribute('schemeIdUri');
-                
-                this.log(`ContentProtection ${i}: schemeIdUri=${schemeIdUri}`);
-                
-                // Check for Widevine
-                if (schemeIdUri === 'urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed') {
-                    // Extract PSSH from cenc:pssh
-                    const psshElement = cp.getElementsByTagName('cenc:pssh')[0];
-                    if (psshElement) {
-                        pssh = psshElement.textContent;
-                        this.log(`Found Widevine PSSH: ${pssh.substring(0, 50)}...`);
-                    }
-                }
-                
-                // Look for license URL in various places
-                const laUrl = cp.getElementsByTagName('ms:laurl')[0] || 
-                             cp.getElementsByTagName('dashif:laurl')[0] ||
-                             cp.getElementsByTagName('LicenseUrl')[0];
-                
-                if (laUrl) {
-                    licenseUrl = laUrl.getAttribute('licenseUrl') || laUrl.textContent;
-                    this.log(`Found license URL: ${licenseUrl}`);
-                }
-            }
-            
-            // Check for common license URL locations in MPD
-            if (!licenseUrl) {
-                const location = xmlDoc.getElementsByTagName('Location');
-                if (location.length > 0) {
-                    licenseUrl = location[0].textContent;
-                    this.log(`Found Location: ${licenseUrl}`);
-                }
-            }
-            
-            // Store for later use
-            this.mpdData = {
-                licenseUrl: licenseUrl,
-                pssh: pssh,
-                mpdXml: mpdText
-            };
-            
-            // If we found license URL, configure DRM
-            if (licenseUrl) {
-                this.log(`Configuring DRM with license URL: ${licenseUrl}`);
-                this.player.configure({
-                    drm: {
-                        servers: {
-                            'com.widevine.alpha': licenseUrl
-                        }
-                    }
-                });
-            } else {
-                this.log('No license URL found in MPD, will try to extract from player_params');
-            }
-            
-            // Log full MPD structure for debugging
-            this.log('MPD structure:', {
-                rootElement: xmlDoc.documentElement.nodeName,
-                contentProtectionCount: contentProtection.length,
-                hasLicenseUrl: !!licenseUrl,
-                hasPSSH: !!pssh
-            });
-            
-        } catch (error) {
-            this.log('Error parsing MPD:', error);
-            // Continue anyway, maybe player will handle
-        }
-    }
-    
     async playVideo(mpdUrl, token) {
         this.updateStatus('loading', 'Loading video stream...');
         
         try {
-            // Try different methods to pass token
-            const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-            
-            // Configure networking to add token to all requests
+            // Configure networking to add token to license requests
             const netEngine = this.player.getNetworkingEngine();
             
-            // Add request filter to inject token in headers
+            // Clear previous filters
+            netEngine.clearAllRequestFilters();
+            
+            // Add new filter for token
             netEngine.registerRequestFilter((type, request) => {
                 // Add token to all requests
                 request.headers['Authorization'] = `Bearer ${token}`;
                 request.headers['X-Token'] = token;
                 
+                // Special handling for license requests
                 if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                    this.log('Sending license request with token');
-                    // Add token to license request body if needed
-                    if (request.body && this.mpdData && this.mpdData.pssh) {
+                    this.log('🔑 Adding token to license request');
+                    
+                    // Try to add token to body if it's JSON
+                    if (request.body && request.body.byteLength) {
                         try {
-                            const body = JSON.parse(request.body);
-                            body.token = token;
-                            request.body = JSON.stringify(body);
-                        } catch(e) {
-                            // If not JSON, add as form data
-                            if (request.body instanceof ArrayBuffer) {
-                                const str = new TextDecoder().decode(request.body);
-                                request.body = new TextEncoder().encode(str + `&token=${token}`);
+                            const decoder = new TextDecoder('utf-8');
+                            const bodyStr = decoder.decode(request.body);
+                            
+                            // Check if body is JSON
+                            if (bodyStr.trim().startsWith('{')) {
+                                const bodyJson = JSON.parse(bodyStr);
+                                bodyJson.token = token;
+                                request.body = new TextEncoder().encode(JSON.stringify(bodyJson));
+                                this.log('Added token to license request body');
+                            } else {
+                                // Append token to existing body
+                                const newBody = bodyStr + (bodyStr.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+                                request.body = new TextEncoder().encode(newBody);
+                                this.log('Appended token to license request body');
                             }
+                        } catch(e) {
+                            this.log('Could not modify license body:', e.message);
                         }
                     }
                 }
             });
             
-            this.log('Loading MPD with token in URL and headers');
+            // Construct MPD URL with token
+            const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+            this.log(`Loading MPD: ${urlWithToken.substring(0, 200)}...`);
             
-            // Try to load
+            // Load the video
             await this.player.load(urlWithToken);
             
+            // Show player
             this.playerContainer.style.display = 'block';
-            this.updateStatus('success', 'Video loaded successfully! Playing...');
+            this.updateStatus('success', 'Video loaded! Playing...');
             
-            // Try to autoplay
+            // Auto-play
             this.videoElement.play().catch(e => {
-                this.log('Auto-play blocked, user interaction needed');
+                this.log('Auto-play blocked, click play button');
             });
             
         } catch (error) {
-            // If fails, try without token in URL
-            this.log('First method failed, trying without URL token...');
+            this.log('Failed with URL token, trying without...');
             
             try {
+                // Try without token in URL
                 await this.player.load(mpdUrl);
                 this.playerContainer.style.display = 'block';
-                this.updateStatus('success', 'Video loaded with header auth only!');
+                this.updateStatus('success', 'Video loaded!');
             } catch (altError) {
                 throw new Error(`Failed to load video: ${altError.message}`);
             }
@@ -317,81 +237,62 @@ class DRMVideoPlayer {
         this.log('Shaka Error:', error);
         
         let errorMessage = '';
-        let errorCode = '';
+        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
         
-        if (error && error.detail) {
-            const detail = error.detail;
-            errorCode = detail.code || 'Unknown';
-            
-            switch(errorCode) {
-                case 1000:
-                    errorMessage = 'Network error - Check your internet connection';
-                    break;
-                case 1001:
-                    errorMessage = 'Manifest request failed - MPD file not accessible';
-                    break;
-                case 1002:
-                    errorMessage = 'Manifest parse failed - Invalid MPD format';
-                    break;
-                case 2000:
-                    errorMessage = 'DRM license server error - License request failed';
-                    break;
-                case 6007:
-                    errorMessage = 'DRM license request failed - Check token and license server';
-                    this.log('Possible issues:');
-                    this.log('- License server URL not found in MPD');
-                    this.log('- Token expired or invalid');
-                    this.log('- CORS issues with license server');
-                    this.log('- Widevine not supported in this browser');
-                    break;
-                case 6010:
-                    errorMessage = 'DRM session not created - Missing PSSH data';
-                    break;
-                default:
-                    errorMessage = `Error ${errorCode}: ${detail.message || 'Unknown error'}`;
-            }
-        } else {
-            errorMessage = error.message || 'Unknown error';
+        switch(errorCode) {
+            case 1000:
+                errorMessage = 'Network error - Check connection';
+                break;
+            case 1001:
+                errorMessage = 'MPD file not accessible';
+                break;
+            case 1002:
+                errorMessage = 'Invalid MPD format';
+                break;
+            case 2000:
+            case 6007:
+                errorMessage = 'License server error - Check token validity';
+                this.log('💡 Token might be expired or invalid');
+                break;
+            case 6010:
+                errorMessage = 'DRM session error';
+                break;
+            case 6012:
+                errorMessage = 'License server not configured - Check if license URL is correct';
+                this.log(`💡 Current license server: ${this.licenseServerUrl}`);
+                this.log('💡 Make sure this URL is accessible');
+                break;
+            default:
+                errorMessage = error.detail?.message || error.message || 'Unknown error';
         }
         
-        this.updateStatus('error', `Shaka Error ${errorCode}: ${errorMessage}`);
+        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
         
-        // Suggest solutions
-        if (errorCode === 6007) {
-            this.log('\n💡 SOLUTIONS:');
-            this.log('1. Check if token is still valid');
-            this.log('2. Verify license server URL is accessible');
-            this.log('3. Try with Chrome browser (best Widevine support)');
-            this.log('4. Check if the video URL is still active');
-            this.log('5. Open browser console for more details');
+        if (errorCode === 6012) {
+            this.log('\n🔧 FIXES:');
+            this.log('1. License server URL might be wrong');
+            this.log('2. Try: https://license.videocrypt.com/validateLicense');
+            this.log('3. Check if token includes license server info');
+            this.log('4. Some videos need different license server');
         }
     }
     
     updateVideoInfo(videoData) {
-        const info = {
-            'File URL': videoData.file_url ? this.truncateUrl(videoData.file_url) : 'N/A',
-            'Token': videoData.token ? `${videoData.token.substring(0, 30)}...` : 'N/A',
-            'Ads Enabled': videoData.ad_enable ? 'Yes' : 'No',
-            'VR Video': videoData.is_vr_video ? 'Yes' : 'No',
-            'Live Status': videoData.live_status === 0 ? 'VOD' : 'Live'
-        };
-        
-        let html = '<div style="display: grid; gap: 5px;">';
-        for (const [key, value] of Object.entries(info)) {
-            html += `<div><strong>${key}:</strong> ${value}</div>`;
-        }
-        html += '</div>';
-        
+        let html = `
+            <div style="display: grid; gap: 8px;">
+                <div><strong>🎬 MPD URL:</strong><br>${this.truncateUrl(videoData.file_url, 80)}</div>
+                <div><strong>🔑 License Server:</strong><br>${this.licenseServerUrl}</div>
+                <div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 40)}...</div>
+                <div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
+                     <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
+                     <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>
+            </div>
+        `;
         this.videoInfo.innerHTML = html;
     }
     
     updateStatus(type, message) {
-        const icons = {
-            loading: '⏳',
-            success: '✅',
-            error: '❌'
-        };
-        
+        const icons = { loading: '⏳', success: '✅', error: '❌' };
         this.statusIcon.textContent = icons[type] || 'ℹ️';
         this.statusDiv.textContent = message;
         
@@ -419,14 +320,15 @@ class DRMVideoPlayer {
         this.debugLog.textContent = currentLog + '\n' + logMessage;
         
         const lines = this.debugLog.textContent.split('\n');
-        if (lines.length > 100) {
-            this.debugLog.textContent = lines.slice(-100).join('\n');
+        if (lines.length > 150) {
+            this.debugLog.textContent = lines.slice(-150).join('\n');
         }
     }
     
-    truncateUrl(url) {
-        if (url.length <= 60) return url;
-        return url.substring(0, 40) + '...' + url.substring(url.length - 20);
+    truncateUrl(url, maxLen = 60) {
+        if (!url) return 'N/A';
+        if (url.length <= maxLen) return url;
+        return url.substring(0, maxLen - 20) + '...' + url.substring(url.length - 15);
     }
 }
 

@@ -3,29 +3,107 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>DRM Video Player - MPD Stream</title>
+    <title>⚡ Ultimate Video Player & Download Manager</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.13/dist/shaka-player.compiled.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎬 DRM Video Player</h1>
-            <p>MPD Stream with Widevine Support</p>
+            <h1>⚡ Ultimate Video Player & Downloader</h1>
+            <p>MPD (DRM) | M3U8 (HLS) | MP4 | YouTube | Download Manager</p>
         </div>
 
         <div class="input-section">
-            <label for="apiUrl">🔗 Enter API URL:</label>
+            <label for="apiUrl">🔗 Enter Video URL or API Link:</label>
             <div class="input-group">
-                <input type="text" id="apiUrl" placeholder="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740" value="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
-                <button id="loadBtn" class="btn-primary">▶ Load Video</button>
+                <input type="text" id="apiUrl" placeholder="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
+                <button id="loadBtn" class="btn-primary">▶ Load & Play</button>
+                <button id="downloadBtn" class="btn-download">⬇ Download</button>
+            </div>
+            <div class="url-tabs">
+                <button class="url-tab active" data-type="api">📡 API Link</button>
+                <button class="url-tab" data-type="mpd">🎬 MPD URL</button>
+                <button class="url-tab" data-type="m3u8">📺 M3U8 URL</button>
+                <button class="url-tab" data-type="mp4">🎥 MP4 URL</button>
+                <button class="url-tab" data-type="yt">▶️ YouTube URL</button>
+            </div>
+        </div>
+
+        <!-- Quality Selector for Download -->
+        <div class="quality-selector-download" id="qualitySelector" style="display: none;">
+            <h4>📀 Select Quality to Download:</h4>
+            <div class="quality-buttons" id="qualityButtons"></div>
+        </div>
+
+        <!-- Download Manager Panel -->
+        <div class="download-manager">
+            <div class="download-header">
+                <h3>📥 Download Manager</h3>
+                <button id="clearDownloadsBtn" class="clear-btn">Clear All</button>
+            </div>
+            <div id="downloadList" class="download-list">
+                <div class="empty-downloads">No active downloads</div>
             </div>
         </div>
 
         <div class="player-container" id="playerContainer" style="display: none;">
             <div class="video-wrapper">
                 <video id="videoPlayer" controls playsinline></video>
+                <div class="video-overlay" id="videoOverlay">
+                    <div class="loading-spinner" id="loadingSpinner">
+                        <div class="spinner"></div>
+                        <p>Loading video...</p>
+                    </div>
+                </div>
             </div>
+            
+            <div class="controls-bar" id="controlsBar">
+                <div class="progress-container">
+                    <div class="progress-bg" id="progressBg">
+                        <div class="progress-fill" id="progressFill"></div>
+                        <div class="progress-hover" id="progressHover"></div>
+                    </div>
+                </div>
+                <div class="controls-row">
+                    <div class="controls-left">
+                        <button id="playPauseBtn" class="control-btn">▶</button>
+                        <div class="volume-control">
+                            <button id="volumeBtn" class="control-btn">🔊</button>
+                            <input type="range" id="volumeSlider" min="0" max="100" value="100" class="volume-slider">
+                        </div>
+                        <span id="timeDisplay" class="time-display">0:00 / 0:00</span>
+                    </div>
+                    
+                    <div class="controls-center">
+                        <div class="quality-selector">
+                            <button id="qualityBtn" class="control-btn">⚙️ Quality</button>
+                            <div class="quality-dropdown" id="qualityDropdown">
+                                <div class="quality-option" data-quality="auto">Auto</div>
+                            </div>
+                        </div>
+                        <div class="speed-selector">
+                            <button id="speedBtn" class="control-btn">⏩ 1x</button>
+                            <div class="speed-dropdown" id="speedDropdown">
+                                <div class="speed-option" data-speed="0.5">0.5x</div>
+                                <div class="speed-option" data-speed="0.75">0.75x</div>
+                                <div class="speed-option" data-speed="1" class="active">1x</div>
+                                <div class="speed-option" data-speed="1.25">1.25x</div>
+                                <div class="speed-option" data-speed="1.5">1.5x</div>
+                                <div class="speed-option" data-speed="2">2x</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="controls-right">
+                        <button id="pipBtn" class="control-btn">📺 PiP</button>
+                        <button id="fullscreenBtn" class="control-btn">⛶ Fullscreen</button>
+                    </div>
+                </div>
+            </div>
+            
             <div class="video-info" id="videoInfo"></div>
         </div>
 

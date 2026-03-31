@@ -1,499 +1,426 @@
-class UltimateVideoPlayer {
+// Main DRM Video Player with DRM support
+class DRMVideoPlayer {
     constructor() {
-        this.video = document.getElementById('videoPlayer');
+        this.player = null;
+        this.videoElement = document.getElementById('videoPlayer');
         this.apiUrlInput = document.getElementById('apiUrl');
         this.loadBtn = document.getElementById('loadBtn');
-        this.downloadBtn = document.getElementById('downloadBtn');
         this.playerContainer = document.getElementById('playerContainer');
+        this.playerControlsBar = document.getElementById('playerControlsBar');
         this.statusDiv = document.querySelector('.status-text');
         this.statusIcon = document.querySelector('.status-icon');
         this.debugLog = document.getElementById('debugLog');
         this.videoInfo = document.getElementById('videoInfo');
-        this.overlay = document.getElementById('videoOverlay');
         
-        // Player instances
-        this.shakaPlayer = null;
-        this.hls = null;
-        this.ytPlayer = null;
-        this.currentType = null;
-        
-        // State
-        this.isPlaying = false;
-        this.currentQuality = 'auto';
-        this.currentSpeed = 1;
-        this.qualities = [];
-        this.currentVideoData = null;
-        
-        // Download Manager
-        this.downloads = new Map();
-        this.downloadId = 0;
-        
-        // License server
+        // EXACT LICENSE SERVER FROM ORIGINAL SITE
         this.licenseServerUrl = 'https://license.videocrypt.com/validateLicense';
+        
+        // Store current video info for download
+        this.currentVideoUrl = null;
+        this.currentVideoType = null;
+        this.currentVideoTitle = 'video';
         
         this.init();
     }
     
     init() {
-        this.initControls();
-        this.initShaka();
-        this.initDownloadManager();
-        
+        this.initShakaPlayer();
         this.loadBtn.addEventListener('click', () => this.loadVideo());
-        this.downloadBtn.addEventListener('click', () => this.showDownloadQualitySelector());
         this.apiUrlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.loadVideo();
         });
+        this.log('Player initialized. Ready to load video.');
+        this.log(`License server: ${this.licenseServerUrl}`);
         
-        // Tab switching
-        document.querySelectorAll('.url-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.url-tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                const type = tab.dataset.type;
-                const placeholders = {
-                    api: 'https://bypass-pearl-tau.vercel.app/api/proxy?url=...',
-                    mpd: 'https://example.com/video.mpd?token=...',
-                    m3u8: 'https://example.com/playlist.m3u8',
-                    mp4: 'https://example.com/video.mp4',
-                    yt: 'https://youtu.be/... or https://youtube.com/watch?v=...'
-                };
-                this.apiUrlInput.placeholder = placeholders[type];
+        // Initialize download button handler
+        const downloadBtn = document.getElementById('downloadBtn');
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', () => this.handleDownload());
+        }
+        
+        // Initialize speed selector
+        const speedSelector = document.getElementById('speedSelector');
+        if (speedSelector) {
+            speedSelector.addEventListener('change', (e) => {
+                const speed = parseFloat(e.target.value);
+                if (this.videoElement) {
+                    this.videoElement.playbackRate = speed;
+                    this.log(`Playback speed changed to: ${speed}x`);
+                    showNotification(`Speed: ${speed}x`, 'info');
+                }
             });
-        });
-        
-        this.log('Player initialized');
-    }
-    
-    initDownloadManager() {
-        document.getElementById('clearDownloadsBtn').addEventListener('click', () => {
-            this.downloads.clear();
-            this.renderDownloadList();
-        });
-        
-        // Request notification permission
-        if ('Notification' in window && Notification.permission !== 'granted') {
-            Notification.requestPermission();
         }
     }
     
-    initControls() {
-        // Play/Pause
-        const playPauseBtn = document.getElementById('playPauseBtn');
-        playPauseBtn.addEventListener('click', () => this.togglePlayPause());
-        this.video.addEventListener('play', () => playPauseBtn.textContent = '⏸');
-        this.video.addEventListener('pause', () => playPauseBtn.textContent = '▶');
+    initShakaPlayer() {
+        if (!this.videoElement) return;
         
-        // Volume
-        const volumeBtn = document.getElementById('volumeBtn');
-        const volumeSlider = document.getElementById('volumeSlider');
-        volumeSlider.addEventListener('input', (e) => {
-            this.video.volume = e.target.value / 100;
-            volumeBtn.textContent = this.video.volume === 0 ? '🔇' : '🔊';
-        });
-        volumeBtn.addEventListener('click', () => {
-            this.video.muted = !this.video.muted;
-            volumeBtn.textContent = this.video.muted ? '🔇' : '🔊';
-        });
+        if (!window.shaka) {
+            this.updateStatus('error', 'Shaka Player not loaded');
+            return;
+        }
         
-        // Progress bar
-        const progressBg = document.getElementById('progressBg');
-        const progressFill = document.getElementById('progressFill');
-        const progressHover = document.getElementById('progressHover');
-        const timeDisplay = document.getElementById('timeDisplay');
+        // Install polyfills
+        if (window.shaka.polyfill) {
+            window.shaka.polyfill.installAll();
+            this.log('Shaka polyfills installed');
+        }
         
-        this.video.addEventListener('timeupdate', () => {
-            const percent = (this.video.currentTime / this.video.duration) * 100;
-            progressFill.style.width = `${percent}%`;
-            timeDisplay.textContent = `${this.formatTime(this.video.currentTime)} / ${this.formatTime(this.video.duration)}`;
-        });
+        // Check browser support
+        if (!window.shaka.Player.isBrowserSupported()) {
+            this.updateStatus('error', 'Browser does not support DRM playback');
+            return;
+        }
         
-        progressBg.addEventListener('click', (e) => {
-            const rect = progressBg.getBoundingClientRect();
-            const percent = (e.clientX - rect.left) / rect.width;
-            this.video.currentTime = percent * this.video.duration;
-        });
+        this.player = new window.shaka.Player(this.videoElement);
         
-        progressBg.addEventListener('mousemove', (e) => {
-            const rect = progressBg.getBoundingClientRect();
-            const percent = (e.clientX - rect.left) / rect.width;
-            progressHover.style.width = `${percent * 100}%`;
-        });
-        
-        progressBg.addEventListener('mouseleave', () => {
-            progressHover.style.width = '0%';
-        });
-        
-        // Quality selector
-        const qualityBtn = document.getElementById('qualityBtn');
-        const qualityDropdown = document.getElementById('qualityDropdown');
-        qualityBtn.addEventListener('click', () => {
-            qualityDropdown.classList.toggle('show');
-            document.getElementById('speedDropdown').classList.remove('show');
-        });
-        
-        // Speed selector
-        const speedBtn = document.getElementById('speedBtn');
-        const speedDropdown = document.getElementById('speedDropdown');
-        speedBtn.addEventListener('click', () => {
-            speedDropdown.classList.toggle('show');
-            qualityDropdown.classList.remove('show');
-        });
-        
-        document.querySelectorAll('.speed-option').forEach(opt => {
-            opt.addEventListener('click', () => {
-                const speed = parseFloat(opt.dataset.speed);
-                this.video.playbackRate = speed;
-                this.currentSpeed = speed;
-                speedBtn.textContent = `⏩ ${speed}x`;
-                document.querySelectorAll('.speed-option').forEach(o => o.classList.remove('active'));
-                opt.classList.add('active');
-                speedDropdown.classList.remove('show');
-                this.log(`Playback speed: ${speed}x`);
-            });
-        });
-        
-        // PiP
-        document.getElementById('pipBtn').addEventListener('click', async () => {
-            if (document.pictureInPictureElement) {
-                await document.exitPictureInPicture();
-            } else {
-                await this.video.requestPictureInPicture();
+        // Configure DRM with license server
+        this.player.configure({
+            drm: {
+                servers: {
+                    'com.widevine.alpha': this.licenseServerUrl
+                },
+                advanced: {
+                    'com.widevine.alpha': {
+                        videoRobustness: ''
+                    }
+                },
+                retryParameters: {
+                    maxAttempts: 5,
+                    baseDelay: 1000,
+                    backoffFactor: 2
+                }
+            },
+            streaming: {
+                rebufferingGoal: 2,
+                bufferingGoal: 10,
+                retryParameters: {
+                    maxAttempts: 5,
+                    baseDelay: 1000,
+                    backoffFactor: 2
+                }
             }
         });
         
-        // Fullscreen
-        document.getElementById('fullscreenBtn').addEventListener('click', () => {
-            if (!document.fullscreenElement) {
-                this.playerContainer.requestFullscreen();
-            } else {
-                document.exitFullscreen();
-            }
+        // Error handler
+        this.player.addEventListener('error', (event) => {
+            this.handleShakaError(event.detail);
         });
         
-        // Close dropdowns on click outside
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('.quality-selector')) qualityDropdown.classList.remove('show');
-            if (!e.target.closest('.speed-selector')) speedDropdown.classList.remove('show');
+        // Event listeners
+        this.player.addEventListener('buffering', () => {
+            this.log('Buffering...');
         });
+        
+        this.player.addEventListener('loading', () => {
+            this.log('Loading...');
+        });
+        
+        this.player.addEventListener('trackschanged', () => {
+            this.updateQualitySelector();
+        });
+        
+        this.log('Shaka Player initialized');
     }
     
-    initShaka() {
-        if (!window.shaka) return;
-        if (window.shaka.polyfill) window.shaka.polyfill.installAll();
+    updateQualitySelector() {
+        if (!this.player) return;
+        const tracks = this.player.getVariantTracks();
+        const qualitySelect = document.getElementById('qualitySelector');
+        if (!qualitySelect) return;
+        
+        // Clear existing options except Auto
+        qualitySelect.innerHTML = '<option value="auto">Auto</option>';
+        
+        if (tracks.length === 0) return;
+        
+        // Get unique heights
+        const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a,b) => a-b);
+        
+        heights.forEach(height => {
+            const option = document.createElement('option');
+            option.value = height;
+            option.textContent = `${height}p`;
+            qualitySelect.appendChild(option);
+        });
+        
+        // Add quality change handler
+        qualitySelect.onchange = () => {
+            const selectedValue = qualitySelect.value;
+            if (selectedValue === 'auto') {
+                this.player.configure({ abr: { enabled: true } });
+                this.log('Quality set to Auto');
+                showNotification('Quality: Auto', 'info');
+            } else {
+                const targetHeight = parseInt(selectedValue);
+                const track = tracks.find(t => t.height === targetHeight);
+                if (track) {
+                    this.player.configure({ abr: { enabled: false } });
+                    this.player.selectVariantTrack(track);
+                    this.log(`Quality set to: ${targetHeight}p`);
+                    showNotification(`Quality: ${targetHeight}p`, 'info');
+                }
+            }
+        };
+        
+        this.log(`Quality options: ${heights.join('p, ')}p`);
     }
     
     async loadVideo() {
-        const activeTab = document.querySelector('.url-tab.active').dataset.type;
-        let url = this.apiUrlInput.value.trim();
+        const inputUrl = this.apiUrlInput.value.trim();
         
-        if (!url) {
+        if (!inputUrl) {
             this.updateStatus('error', 'Please enter a URL');
             return;
         }
         
         this.updateStatus('loading', 'Loading video...');
-        this.playerContainer.style.display = 'block';
-        this.overlay.style.display = 'flex';
-        
-        this.destroyPlayers();
+        this.playerContainer.style.display = 'none';
+        this.playerControlsBar.style.display = 'none';
         
         try {
-            if (activeTab === 'api') {
-                await this.loadFromAPI(url);
-            } else if (activeTab === 'mpd') {
-                await this.loadMPD(url, null);
-            } else if (activeTab === 'm3u8') {
-                await this.loadM3U8(url);
-            } else if (activeTab === 'mp4') {
-                await this.loadMP4(url);
-            } else if (activeTab === 'yt') {
-                await this.loadYouTube(url);
+            // Detect URL type
+            const urlType = this.detectUrlType(inputUrl);
+            this.log(`Detected URL type: ${urlType}`);
+            
+            if (urlType === 'api') {
+                await this.loadFromApi(inputUrl);
+            } else if (urlType === 'mpd') {
+                await this.loadMpdDirect(inputUrl);
+            } else if (urlType === 'm3u8') {
+                await this.loadM3u8(inputUrl);
+            } else if (urlType === 'mp4') {
+                await this.loadMp4(inputUrl);
+            } else if (urlType === 'youtube') {
+                await this.loadYouTube(inputUrl);
+            } else {
+                throw new Error('Unsupported URL format');
             }
+            
         } catch (error) {
             this.handleError(error);
-            this.overlay.style.display = 'none';
         }
     }
     
-    async loadFromAPI(apiUrl) {
-        this.log('Fetching from API:', apiUrl);
+    detectUrlType(url) {
+        url = url.toLowerCase();
+        
+        // Check for API pattern (contains /api/ or proxy)
+        if (url.includes('/api/') || url.includes('bypass') || url.includes('get_video_details')) {
+            return 'api';
+        }
+        
+        // Check for YouTube
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            return 'youtube';
+        }
+        
+        // Check for MPD
+        if (url.includes('.mpd') || url.includes('manifest')) {
+            return 'mpd';
+        }
+        
+        // Check for M3U8
+        if (url.includes('.m3u8') || url.includes('hls')) {
+            return 'm3u8';
+        }
+        
+        // Check for MP4
+        if (url.includes('.mp4') || url.includes('.mkv') || url.includes('.webm')) {
+            return 'mp4';
+        }
+        
+        return 'unknown';
+    }
+    
+    async loadFromApi(apiUrl) {
+        this.updateStatus('loading', 'Fetching video details from API...');
         
         const response = await fetch(apiUrl);
         const data = await response.json();
         
+        this.log('API Response:', data);
+        
         if (!data.status || !data.data || !data.data.link) {
-            throw new Error('Invalid API response');
+            throw new Error('Invalid API response format');
         }
         
         const videoData = data.data.link;
-        this.currentVideoData = videoData;
         const mpdUrl = videoData.file_url;
         const token = videoData.token;
         
-        this.updateVideoInfo({
-            type: 'DRM MPD',
-            url: mpdUrl,
-            token: token?.substring(0, 50) + '...',
-            ads: videoData.ad_enable ? 'Yes' : 'No',
-            vr: videoData.is_vr_video ? 'Yes' : 'No'
-        });
-        
-        await this.loadMPD(mpdUrl, token);
-    }
-    
-    async loadMPD(mpdUrl, token) {
-        this.log('Loading MPD:', mpdUrl);
-        this.currentType = 'mpd';
-        
-        if (!window.shaka || !window.shaka.Player.isBrowserSupported()) {
-            throw new Error('Shaka Player not supported');
+        if (!mpdUrl) {
+            throw new Error('No MPD URL found in response');
         }
         
-        this.shakaPlayer = new window.shaka.Player(this.video);
+        this.log(`MPD URL: ${mpdUrl}`);
+        this.log(`Token: ${token.substring(0, 50)}...`);
         
-        this.shakaPlayer.configure({
-            drm: {
-                servers: { 'com.widevine.alpha': this.licenseServerUrl },
-                advanced: { 'com.widevine.alpha': { videoRobustness: '' } }
-            },
-            abr: { enabled: true }
-        });
+        // Store for download
+        this.currentVideoUrl = mpdUrl;
+        this.currentVideoType = 'mpd';
+        this.currentVideoTitle = videoData.title || 'drm_video';
         
-        if (token) {
-            this.shakaPlayer.getNetworkingEngine().registerRequestFilter((type, request) => {
-                if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                    request.headers['pallycon-customdata-v2'] = token;
+        this.updateVideoInfo(videoData);
+        await this.playMpdWithToken(mpdUrl, token);
+    }
+    
+    async loadMpdDirect(mpdUrl) {
+        this.currentVideoUrl = mpdUrl;
+        this.currentVideoType = 'mpd';
+        this.currentVideoTitle = 'direct_mpd_video';
+        await this.playMpdWithToken(mpdUrl, null);
+    }
+    
+    async playMpdWithToken(mpdUrl, token) {
+        this.updateStatus('loading', 'Loading DRM video...');
+        
+        try {
+            if (!this.player) {
+                this.initShakaPlayer();
+            }
+            
+            const netEngine = this.player.getNetworkingEngine();
+            netEngine.clearAllRequestFilters();
+            
+            if (token) {
+                // EXACT REQUEST FILTER FROM ORIGINAL SITE
+                netEngine.registerRequestFilter((type, request) => {
+                    if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                        this.log('🔐 Adding token to license request');
+                        request.headers['pallycon-customdata-v2'] = token;
+                        request.headers['Origin'] = window.location.origin;
+                        request.headers['X-Requested-With'] = 'XMLHttpRequest';
+                    }
+                });
+            }
+            
+            // Load MPD with token in URL if present
+            let urlWithToken = mpdUrl;
+            if (token) {
+                urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+            }
+            this.log(`Loading MPD: ${urlWithToken}`);
+            
+            await this.player.load(urlWithToken);
+            
+            this.playerContainer.style.display = 'block';
+            this.playerControlsBar.style.display = 'flex';
+            this.updateStatus('success', 'Video loaded! Playing...');
+            
+            // Update quality selector after load
+            setTimeout(() => this.updateQualitySelector(), 1000);
+            
+            // Auto-play
+            this.videoElement.play().catch(e => {
+                this.log('Auto-play blocked, user must click play');
+                showNotification('Click play to start video', 'info');
+            });
+            
+        } catch (error) {
+            this.log('Failed to load MPD:', error);
+            throw error;
+        }
+    }
+    
+    async loadM3u8(url) {
+        this.updateStatus('loading', 'Loading HLS stream...');
+        this.currentVideoUrl = url;
+        this.currentVideoType = 'm3u8';
+        this.currentVideoTitle = 'hls_video';
+        
+        this.playerContainer.style.display = 'block';
+        this.playerControlsBar.style.display = 'flex';
+        
+        // Use Hls.js for M3U8
+        if (Hls.isSupported()) {
+            const hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(this.videoElement);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                this.log('HLS manifest parsed');
+                this.updateStatus('success', 'HLS stream loaded');
+                this.videoElement.play().catch(e => this.log('Auto-play blocked'));
+                
+                // Populate quality options for HLS
+                const levels = hls.levels;
+                const qualitySelect = document.getElementById('qualitySelector');
+                if (qualitySelect && levels.length > 0) {
+                    qualitySelect.innerHTML = '<option value="auto">Auto</option>';
+                    levels.forEach((level, idx) => {
+                        const option = document.createElement('option');
+                        option.value = idx;
+                        option.textContent = `${level.height}p`;
+                        qualitySelect.appendChild(option);
+                    });
+                    qualitySelect.onchange = () => {
+                        const selected = qualitySelect.value;
+                        if (selected === 'auto') {
+                            hls.currentLevel = -1;
+                        } else {
+                            hls.currentLevel = parseInt(selected);
+                        }
+                    };
                 }
             });
-        }
-        
-        this.shakaPlayer.addEventListener('error', (e) => this.handleShakaError(e.detail));
-        this.shakaPlayer.addEventListener('trackschanged', () => this.updateQualities());
-        
-        const urlWithToken = token ? `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : mpdUrl;
-        await this.shakaPlayer.load(urlWithToken);
-        
-        this.setupVideoEvents();
-        this.overlay.style.display = 'none';
-        this.updateStatus('success', 'Video loaded successfully');
-    }
-    
-    async loadM3U8(url) {
-        this.log('Loading M3U8:', url);
-        this.currentType = 'm3u8';
-        
-        if (this.video.canPlayType('application/vnd.apple.mpegurl')) {
-            this.video.src = url;
-            this.setupVideoEvents();
-        } else if (window.Hls && window.Hls.isSupported()) {
-            this.hls = new window.Hls();
-            this.hls.loadSource(url);
-            this.hls.attachMedia(this.video);
-            this.hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
-                this.updateQualitiesHLS();
-                this.overlay.style.display = 'none';
+            hls.on(Hls.Events.ERROR, (event, data) => {
+                this.log('HLS Error:', data);
             });
-            this.hls.on(window.Hls.Events.ERROR, (e, data) => {
-                if (data.fatal) this.handleError(new Error('HLS error'));
+            window.currentHls = hls;
+        } else if (this.videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS support (Safari)
+            this.videoElement.src = url;
+            this.videoElement.addEventListener('loadedmetadata', () => {
+                this.updateStatus('success', 'HLS stream loaded');
+                this.videoElement.play().catch(e => this.log('Auto-play blocked'));
             });
         } else {
-            throw new Error('HLS not supported');
+            throw new Error('HLS not supported in this browser');
         }
         
-        this.updateVideoInfo({ type: 'HLS/M3U8', url: url });
-        this.setupVideoEvents();
+        this.updateVideoInfo({ file_url: url, type: 'HLS Stream' });
     }
     
-    async loadMP4(url) {
-        this.log('Loading MP4:', url);
-        this.currentType = 'mp4';
-        this.video.src = url;
-        this.setupVideoEvents();
-        this.updateVideoInfo({ type: 'MP4', url: url });
+    async loadMp4(url) {
+        this.updateStatus('loading', 'Loading MP4 video...');
+        this.currentVideoUrl = url;
+        this.currentVideoType = 'mp4';
+        this.currentVideoTitle = this.extractFilename(url) || 'video';
+        
+        this.playerContainer.style.display = 'block';
+        this.playerControlsBar.style.display = 'flex';
+        
+        this.videoElement.src = url;
+        this.videoElement.addEventListener('loadedmetadata', () => {
+            this.updateStatus('success', 'MP4 video loaded');
+            this.log(`Video duration: ${this.videoElement.duration}s`);
+            this.videoElement.play().catch(e => this.log('Auto-play blocked'));
+            
+            // MP4 quality selector (only one quality usually)
+            const qualitySelect = document.getElementById('qualitySelector');
+            if (qualitySelect) {
+                qualitySelect.innerHTML = '<option value="auto">Auto (Source)</option>';
+            }
+        });
+        
+        this.updateVideoInfo({ file_url: url, type: 'MP4 Video' });
     }
     
     async loadYouTube(url) {
-        this.log('Loading YouTube:', url);
-        this.currentType = 'yt';
+        this.updateStatus('loading', 'Loading YouTube video...');
+        this.currentVideoUrl = url;
+        this.currentVideoType = 'youtube';
+        this.currentVideoTitle = 'youtube_video';
         
-        let videoId = '';
-        const patterns = [
-            /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?#]+)/,
-            /youtube\.com\/embed\/([^?#]+)/
-        ];
+        this.playerContainer.style.display = 'block';
+        this.playerControlsBar.style.display = 'flex';
         
-        for (const pattern of patterns) {
-            const match = url.match(pattern);
-            if (match) {
-                videoId = match[1];
-                break;
-            }
-        }
-        
-        if (!videoId) throw new Error('Invalid YouTube URL');
-        
-        if (typeof YT === 'undefined') {
-            await this.loadYouTubeAPI();
-        }
-        
-        this.ytPlayer = new YT.Player(this.video, {
-            videoId: videoId,
-            events: {
-                onReady: () => {
-                    this.overlay.style.display = 'none';
-                    this.updateStatus('success', 'YouTube video loaded');
-                },
-                onError: (e) => this.handleError(new Error(`YouTube error: ${e.data}`))
-            }
-        });
-        
-        this.updateVideoInfo({ type: 'YouTube', url: url, videoId: videoId });
-    }
-    
-    setupVideoEvents() {
-        this.video.addEventListener('playing', () => {
-            this.overlay.style.display = 'none';
-            this.updateStatus('success', 'Playing');
-        });
-        
-        this.video.addEventListener('waiting', () => {
-            this.overlay.style.display = 'flex';
-        });
-        
-        this.video.addEventListener('canplay', () => {
-            this.overlay.style.display = 'none';
-        });
-        
-        this.video.addEventListener('error', () => {
-            this.handleError(new Error('Video playback error'));
-        });
-        
-        this.video.play().catch(() => {
-            this.video.muted = true;
-            this.video.play().catch(() => {});
-        });
-    }
-    
-    updateQualities() {
-        if (!this.shakaPlayer) return;
-        
-        const tracks = this.shakaPlayer.getVariantTracks();
-        const qualities = [...new Map(tracks.map(t => [t.height, t])).values()]
-            .sort((a, b) => b.height - a.height);
-        
-        this.qualities = qualities;
-        const dropdown = document.getElementById('qualityDropdown');
-        dropdown.innerHTML = '<div class="quality-option" data-quality="auto">Auto</div>';
-        
-        qualities.forEach(track => {
-            const opt = document.createElement('div');
-            opt.className = 'quality-option';
-            opt.dataset.quality = track.height;
-            opt.dataset.trackId = track.id;
-            opt.textContent = `${track.height}p`;
-            opt.addEventListener('click', () => this.setQuality(track.height));
-            dropdown.appendChild(opt);
-        });
-    }
-    
-    updateQualitiesHLS() {
-        if (!this.hls) return;
-        
-        const levels = this.hls.levels;
-        const dropdown = document.getElementById('qualityDropdown');
-        dropdown.innerHTML = '<div class="quality-option" data-quality="auto">Auto</div>';
-        
-        levels.forEach((level, index) => {
-            const opt = document.createElement('div');
-            opt.className = 'quality-option';
-            opt.dataset.quality = level.height;
-            opt.dataset.level = index;
-            opt.textContent = `${level.height}p`;
-            opt.addEventListener('click', () => {
-                this.hls.currentLevel = index;
-                this.currentQuality = level.height;
-            });
-            dropdown.appendChild(opt);
-        });
-    }
-    
-    setQuality(height) {
-        if (!this.shakaPlayer) return;
-        
-        if (height === 'auto') {
-            this.shakaPlayer.configure({ abr: { enabled: true } });
-            this.currentQuality = 'auto';
-        } else {
-            const track = this.qualities.find(t => t.height === height);
-            if (track) {
-                this.shakaPlayer.configure({ abr: { enabled: false } });
-                this.shakaPlayer.selectVariantTrack(track, true);
-                this.currentQuality = height;
-            }
-        }
-        
-        document.getElementById('qualityDropdown').classList.remove('show');
-        this.log(`Quality set to: ${height === 'auto' ? 'Auto' : height + 'p'}`);
-    }
-    
-    showDownloadQualitySelector() {
-        const activeTab = document.querySelector('.url-tab.active').dataset.type;
-        let url = this.apiUrlInput.value.trim();
-        
-        if (!url) {
-            this.showNotification('Please enter a URL first', 'error');
-            return;
-        }
-        
-        const selector = document.getElementById('qualitySelector');
-        const buttonsDiv = document.getElementById('qualityButtons');
-        
-        if (activeTab === 'yt') {
-            // YouTube: Open with Snaptube/Vidmate intent
-            this.downloadYouTube(url);
-            return;
-        }
-        
-        // For other formats, show quality selector
-        buttonsDiv.innerHTML = '<div class="quality-btn" data-quality="original">Original Quality</div>';
-        
-        if (this.qualities.length > 0) {
-            this.qualities.forEach(q => {
-                const btn = document.createElement('div');
-                btn.className = 'quality-btn';
-                btn.dataset.quality = q.height;
-                btn.textContent = `${q.height}p`;
-                btn.addEventListener('click', () => {
-                    this.startDownload(url, activeTab, q.height);
-                    selector.style.display = 'none';
-                });
-                buttonsDiv.appendChild(btn);
-            });
-        } else {
-            const btn = document.createElement('div');
-            btn.className = 'quality-btn';
-            btn.dataset.quality = 'original';
-            btn.textContent = 'Download';
-            btn.addEventListener('click', () => {
-                this.startDownload(url, activeTab, null);
-                selector.style.display = 'none';
-            });
-            buttonsDiv.appendChild(btn);
-        }
-        
-        selector.style.display = 'block';
-        setTimeout(() => {
-            selector.style.display = 'none';
-        }, 5000);
-    }
-    
-    downloadYouTube(url) {
         // Extract video ID
         let videoId = '';
         const patterns = [
-            /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?#]+)/,
-            /youtube\.com\/embed\/([^?#]+)/
+            /(?:youtube\.com\/watch\?v=)([^&]+)/,
+            /(?:youtu\.be\/)([^?]+)/,
+            /(?:youtube\.com\/embed\/)([^?]+)/
         ];
         
         for (const pattern of patterns) {
@@ -505,297 +432,74 @@ class UltimateVideoPlayer {
         }
         
         if (!videoId) {
-            this.showNotification('Invalid YouTube URL', 'error');
+            throw new Error('Invalid YouTube URL');
+        }
+        
+        // Use YouTube embed with iframe API or simple embed
+        const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1`;
+        
+        // Replace video element with iframe for YouTube
+        const wrapper = document.querySelector('.video-wrapper');
+        const oldVideo = this.videoElement;
+        const iframe = document.createElement('iframe');
+        iframe.id = 'youtubeIframe';
+        iframe.width = '100%';
+        iframe.height = '400px';
+        iframe.src = embedUrl;
+        iframe.frameBorder = '0';
+        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+        iframe.allowFullscreen = true;
+        
+        oldVideo.style.display = 'none';
+        wrapper.appendChild(iframe);
+        
+        this.updateStatus('success', 'YouTube video loaded');
+        this.log(`YouTube Video ID: ${videoId}`);
+        
+        this.updateVideoInfo({ file_url: url, type: 'YouTube Video', video_id: videoId });
+        
+        // Disable download for YouTube (copyright)
+        const downloadBtn = document.getElementById('downloadBtn');
+        if (downloadBtn) {
+            downloadBtn.disabled = true;
+            downloadBtn.title = 'YouTube download not available due to copyright';
+        }
+    }
+    
+    handleDownload() {
+        if (this.currentVideoType === 'youtube') {
+            showNotification('YouTube download not supported due to copyright restrictions', 'error');
             return;
         }
         
-        // Create intent URL for Snaptube/Vidmate
-        const intentUrl = `snaptube://watch?v=${videoId}`;
-        
-        // Try to open with app
-        window.location.href = intentUrl;
-        
-        // Fallback: open in new tab with download link
-        setTimeout(() => {
-            const fallbackUrl = `https://www.y2mate.com/youtube/${videoId}`;
-            window.open(fallbackUrl, '_blank');
-        }, 500);
-        
-        this.showNotification('Opening in Snaptube/Vidmate...', 'success');
-    }
-    
-    async startDownload(url, type, quality) {
-        const id = ++this.downloadId;
-        const filename = `video_${Date.now()}_${quality || 'original'}.mp4`;
-        
-        const downloadItem = {
-            id,
-            filename,
-            url,
-            type,
-            quality,
-            status: 'downloading',
-            progress: 0,
-            speed: 0,
-            downloaded: 0,
-            total: 0,
-            eta: 0,
-            startTime: Date.now(),
-            xhr: null
-        };
-        
-        this.downloads.set(id, downloadItem);
-        this.renderDownloadList();
-        this.showNotification(`Starting download: ${filename}`, 'success');
-        
-        // Start download in background
-        this.performDownload(downloadItem);
-    }
-    
-    async performDownload(item) {
-        try {
-            const response = await fetch(item.url);
-            const reader = response.body.getReader();
-            const contentLength = parseInt(response.headers.get('Content-Length')) || 0;
-            
-            item.total = contentLength;
-            
-            const chunks = [];
-            let receivedLength = 0;
-            let lastTime = Date.now();
-            let lastBytes = 0;
-            
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                chunks.push(value);
-                receivedLength += value.length;
-                item.downloaded = receivedLength;
-                
-                // Update speed
-                const now = Date.now();
-                const timeDiff = (now - lastTime) / 1000;
-                const bytesDiff = receivedLength - lastBytes;
-                item.speed = bytesDiff / timeDiff;
-                lastTime = now;
-                lastBytes = receivedLength;
-                
-                // Update progress
-                if (contentLength > 0) {
-                    item.progress = (receivedLength / contentLength) * 100;
-                    const remainingBytes = contentLength - receivedLength;
-                    item.eta = remainingBytes / item.speed;
-                }
-                
-                this.renderDownloadList();
-            }
-            
-            // Combine chunks and create blob
-            const blob = new Blob(chunks);
-            const downloadUrl = URL.createObjectURL(blob);
-            
-            // Trigger download in new window
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = item.filename;
-            a.target = '_blank';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-            URL.revokeObjectURL(downloadUrl);
-            
-            item.status = 'completed';
-            item.progress = 100;
-            this.renderDownloadList();
-            this.showNotification(`Download complete: ${item.filename}`, 'success');
-            
-            // Send notification
-            if (Notification.permission === 'granted') {
-                new Notification('Download Complete', {
-                    body: `${item.filename} has been downloaded successfully!`,
-                    icon: 'https://cdn-icons-png.flaticon.com/512/190/190411.png'
-                });
-            }
-            
-        } catch (error) {
-            item.status = 'failed';
-            item.error = error.message;
-            this.renderDownloadList();
-            this.showNotification(`Download failed: ${item.filename}`, 'error');
-        }
-    }
-    
-    renderDownloadList() {
-        const container = document.getElementById('downloadList');
-        
-        if (this.downloads.size === 0) {
-            container.innerHTML = '<div class="empty-downloads">No active downloads</div>';
-            return;
-        }
-        
-        let html = '';
-        for (const [id, item] of this.downloads) {
-            const speedText = this.formatSpeed(item.speed);
-            const sizeText = this.formatSize(item.downloaded);
-            const totalText = this.formatSize(item.total);
-            const etaText = item.eta ? this.formatTime(item.eta) : '--:--';
-            
-            html += `
-                <div class="download-item" data-id="${id}">
-                    <div class="download-info">
-                        <span class="download-filename">${this.escapeHtml(item.filename)}</span>
-                        <span class="download-status ${item.status}">${item.status}</span>
-                    </div>
-                    <div class="download-progress-bar">
-                        <div class="download-progress-fill" style="width: ${item.progress}%"></div>
-                    </div>
-                    <div class="download-stats">
-                        <span>${sizeText} / ${totalText}</span>
-                        <span class="download-speed">⚡ ${speedText}/s</span>
-                        <span>⏱ ETA: ${etaText}</span>
-                    </div>
-                    <div class="download-actions">
-                        ${item.status === 'failed' ? `<button class="download-action-btn" onclick="window.player.retryDownload(${id})">↻ Retry</button>` : ''}
-                        <button class="download-action-btn danger" onclick="window.player.cancelDownload(${id})">✖ Cancel</button>
-                    </div>
-                </div>
-            `;
-        }
-        
-        container.innerHTML = html;
-    }
-    
-    retryDownload(id) {
-        const item = this.downloads.get(id);
-        if (item && item.status === 'failed') {
-            item.status = 'downloading';
-            item.progress = 0;
-            item.downloaded = 0;
-            item.speed = 0;
-            this.performDownload(item);
-        }
-    }
-    
-    cancelDownload(id) {
-        const item = this.downloads.get(id);
-        if (item && item.xhr) {
-            item.xhr.abort();
-        }
-        this.downloads.delete(id);
-        this.renderDownloadList();
-        this.showNotification('Download cancelled', 'info');
-    }
-    
-    formatSpeed(bytesPerSecond) {
-        if (bytesPerSecond === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-        return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    }
-    
-    formatSize(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-    }
-    
-    formatTime(seconds) {
-        if (isNaN(seconds) || !isFinite(seconds)) return '--:--';
-        const hrs = Math.floor(seconds / 3600);
-        const mins = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-        if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-    
-    escapeHtml(str) {
-        return str.replace(/[&<>]/g, function(m) {
-            if (m === '&') return '&amp;';
-            if (m === '<') return '&lt;';
-            if (m === '>') return '&gt;';
-            return m;
-        });
-    }
-    
-    showNotification(message, type = 'info') {
-        const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
-        notification.innerHTML = message;
-        document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            notification.remove();
-        }, 3000);
-    }
-    
-    togglePlayPause() {
-        if (this.currentType === 'yt' && this.ytPlayer) {
-            if (this.isPlaying) this.ytPlayer.pauseVideo();
-            else this.ytPlayer.playVideo();
+        if (this.currentVideoUrl && this.currentVideoType) {
+            this.log('Starting download for:', this.currentVideoUrl);
+            downloadVideo(this.currentVideoUrl, this.currentVideoType, this.currentVideoTitle);
         } else {
-            if (this.video.paused) this.video.play();
-            else this.video.pause();
+            showNotification('No video loaded to download', 'error');
         }
     }
     
-    destroyPlayers() {
-        if (this.shakaPlayer) {
-            this.shakaPlayer.destroy();
-            this.shakaPlayer = null;
+    updateVideoInfo(videoData) {
+        let html = `
+            <div style="display: grid; gap: 8px;">
+                <div><strong>🎬 Video URL:</strong><br>${this.truncateUrl(videoData.file_url || videoData.url || this.currentVideoUrl, 80)}</div>
+                <div><strong>🔑 License Server:</strong><br>${this.licenseServerUrl}</div>
+                <div><strong>📺 Type:</strong> ${videoData.type || this.currentVideoType || 'DRM MPD'}</div>
+            </div>
+        `;
+        
+        if (videoData.token) {
+            html += `<div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 60)}...</div>`;
         }
-        if (this.hls) {
-            this.hls.destroy();
-            this.hls = null;
+        
+        if (videoData.ad_enable !== undefined) {
+            html += `<div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
+                     <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
+                     <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>`;
         }
-        if (this.ytPlayer) {
-            this.ytPlayer.destroy();
-            this.ytPlayer = null;
-        }
-        this.video.src = '';
-        this.video.load();
-    }
-    
-    loadYouTubeAPI() {
-        return new Promise((resolve, reject) => {
-            if (window.YT && window.YT.Player) {
-                resolve();
-                return;
-            }
-            const script = document.createElement('script');
-            script.src = 'https://www.youtube.com/iframe_api';
-            script.onload = () => {
-                window.onYouTubeIframeAPIReady = resolve;
-            };
-            script.onerror = reject;
-            document.head.appendChild(script);
-        });
-    }
-    
-    updateVideoInfo(data) {
-        let html = '<div style="display: grid; gap: 8px;">';
-        for (const [key, value] of Object.entries(data)) {
-            if (value) html += `<div><strong>${key}:</strong> ${value}</div>`;
-        }
-        html += '</div>';
+        
         this.videoInfo.innerHTML = html;
-    }
-    
-    handleShakaError(error) {
-        this.log('Shaka Error:', error);
-        let msg = error.message || 'DRM error';
-        if (error.code === 6007) msg = 'License failed - Token may be expired';
-        this.updateStatus('error', msg);
-    }
-    
-    handleError(error) {
-        this.log('Error:', error);
-        this.updateStatus('error', error.message);
-        this.overlay.style.display = 'none';
     }
     
     updateStatus(type, message) {
@@ -808,6 +512,38 @@ class UltimateVideoPlayer {
                                                type === 'success' ? '#28a745' : '#667eea';
     }
     
+    handleShakaError(error) {
+        this.log('Shaka Error:', error);
+        
+        let errorMessage = '';
+        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
+        
+        switch(errorCode) {
+            case 6007:
+                errorMessage = 'License request failed - Token may be expired or invalid';
+                break;
+            case 6012:
+                errorMessage = 'License server not configured';
+                break;
+            case 1002:
+                errorMessage = 'Network error - Check CORS or server availability';
+                break;
+            default:
+                errorMessage = error.detail?.message || error.message || 'Unknown error';
+        }
+        
+        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
+        showNotification(`Playback error: ${errorMessage}`, 'error');
+    }
+    
+    handleError(error) {
+        console.error('Error:', error);
+        let errorMessage = error instanceof Error ? error.message : String(error);
+        this.updateStatus('error', `Error: ${errorMessage}`);
+        this.log('ERROR:', errorMessage);
+        showNotification(`Error: ${errorMessage}`, 'error');
+    }
+    
     log(...args) {
         const timestamp = new Date().toLocaleTimeString();
         const logMessage = `[${timestamp}] ${args.map(arg => 
@@ -815,17 +551,47 @@ class UltimateVideoPlayer {
         ).join(' ')}`;
         
         console.log(logMessage);
-        const debugLog = document.getElementById('debugLog');
-        debugLog.textContent = debugLog.textContent + '\n' + logMessage;
         
-        const lines = debugLog.textContent.split('\n');
-        if (lines.length > 200) {
-            debugLog.textContent = lines.slice(-200).join('\n');
+        const currentLog = this.debugLog.textContent;
+        this.debugLog.textContent = currentLog + '\n' + logMessage;
+        
+        const lines = this.debugLog.textContent.split('\n');
+        if (lines.length > 150) {
+            this.debugLog.textContent = lines.slice(-150).join('\n');
+        }
+    }
+    
+    truncateUrl(url, maxLen = 60) {
+        if (!url) return 'N/A';
+        if (url.length <= maxLen) return url;
+        return url.substring(0, maxLen - 20) + '...' + url.substring(url.length - 15);
+    }
+    
+    extractFilename(url) {
+        try {
+            const urlObj = new URL(url);
+            const pathname = urlObj.pathname;
+            const filename = pathname.split('/').pop();
+            return filename.replace(/\.[^/.]+$/, '') || 'video';
+        } catch {
+            return 'video';
         }
     }
 }
 
-// Initialize
+// Initialize when DOM ready
 window.addEventListener('DOMContentLoaded', () => {
-    window.player = new UltimateVideoPlayer();
+    if (window.shaka) {
+        window.drmPlayer = new DRMVideoPlayer();
+    } else {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.13/shaka-player.compiled.js';
+        script.onload = () => {
+            window.drmPlayer = new DRMVideoPlayer();
+        };
+        script.onerror = () => {
+            document.querySelector('.status-text').textContent = 'Failed to load Shaka Player';
+        };
+        document.head.appendChild(script);
+    }
 });

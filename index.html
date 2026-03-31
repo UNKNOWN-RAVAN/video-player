@@ -3,52 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>DRM Video Player - MPD Stream with Download</title>
+    <title>DRM Video Player - MPD Stream</title>
     <link rel="stylesheet" href="style.css">
-    <!-- Shaka Player for DRM -->
     <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.13/dist/shaka-player.compiled.js"></script>
-    <!-- Hls.js for M3U8 support -->
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.0/dist/hls.min.js"></script>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>🎬 DRM Video Player</h1>
-            <p>MPD | M3U8 | MP4 | YouTube Support | Download Video</p>
+            <p>MPD Stream with Widevine Support</p>
         </div>
 
         <div class="input-section">
-            <label for="apiUrl">🔗 Enter API URL or Direct Video URL:</label>
+            <label for="apiUrl">🔗 Enter API URL:</label>
             <div class="input-group">
-                <input type="text" id="apiUrl" placeholder="API URL or direct .mp4/.m3u8/.mpd or YouTube URL" value="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
+                <input type="text" id="apiUrl" placeholder="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740" value="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
                 <button id="loadBtn" class="btn-primary">▶ Load Video</button>
-            </div>
-            <div class="url-hint">
-                <small>Supports: DRM MPD (via API), M3U8, MP4, YouTube links, or direct video URLs</small>
-            </div>
-        </div>
-
-        <!-- Player Controls Bar (Quality, Speed, Download) -->
-        <div class="player-controls-bar" id="playerControlsBar" style="display: none;">
-            <div class="control-group">
-                <label>🎞️ Quality:</label>
-                <select id="qualitySelector" class="control-select">
-                    <option value="auto">Auto</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <label>⚡ Speed:</label>
-                <select id="speedSelector" class="control-select">
-                    <option value="0.5">0.5x</option>
-                    <option value="0.75">0.75x</option>
-                    <option value="1.0" selected>1.0x</option>
-                    <option value="1.25">1.25x</option>
-                    <option value="1.5">1.5x</option>
-                    <option value="2.0">2.0x</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <button id="downloadBtn" class="btn-download">⬇️ Download Video</button>
             </div>
         </div>
 
@@ -74,13 +44,6 @@
         </div>
     </div>
 
-    <!-- Notification Toast -->
-    <div id="notificationToast" class="notification-toast"></div>
-
-    <!-- Separate JS Modules -->
-    <script src="notification.js"></script>
-    <script src="downloader.js"></script>
-    <script src="player.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

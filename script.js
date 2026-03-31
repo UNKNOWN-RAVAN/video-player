@@ -1,4 +1,3 @@
-// Main DRM Video Player with DRM support
 class DRMVideoPlayer {
     constructor() {
         this.player = null;
@@ -6,7 +5,6 @@ class DRMVideoPlayer {
         this.apiUrlInput = document.getElementById('apiUrl');
         this.loadBtn = document.getElementById('loadBtn');
         this.playerContainer = document.getElementById('playerContainer');
-        this.playerControlsBar = document.getElementById('playerControlsBar');
         this.statusDiv = document.querySelector('.status-text');
         this.statusIcon = document.querySelector('.status-icon');
         this.debugLog = document.getElementById('debugLog');
@@ -15,10 +13,10 @@ class DRMVideoPlayer {
         // EXACT LICENSE SERVER FROM ORIGINAL SITE
         this.licenseServerUrl = 'https://license.videocrypt.com/validateLicense';
         
-        // Store current video info for download
-        this.currentVideoUrl = null;
-        this.currentVideoType = null;
-        this.currentVideoTitle = 'video';
+        // Store current video data for download
+        this.currentMpdUrl = null;
+        this.currentToken = null;
+        this.currentVideoData = null;
         
         this.init();
     }
@@ -29,26 +27,46 @@ class DRMVideoPlayer {
         this.apiUrlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.loadVideo();
         });
+        
+        // Add download button if it doesn't exist
+        this.addDownloadButton();
+        
         this.log('Player initialized. Ready to load video.');
         this.log(`License server: ${this.licenseServerUrl}`);
+    }
+    
+    addDownloadButton() {
+        // Check if download button already exists
+        if (document.getElementById('downloadBtn')) return;
         
-        // Initialize download button handler
-        const downloadBtn = document.getElementById('downloadBtn');
-        if (downloadBtn) {
-            downloadBtn.addEventListener('click', () => this.handleDownload());
-        }
-        
-        // Initialize speed selector
-        const speedSelector = document.getElementById('speedSelector');
-        if (speedSelector) {
-            speedSelector.addEventListener('change', (e) => {
-                const speed = parseFloat(e.target.value);
-                if (this.videoElement) {
-                    this.videoElement.playbackRate = speed;
-                    this.log(`Playback speed changed to: ${speed}x`);
-                    showNotification(`Speed: ${speed}x`, 'info');
-                }
-            });
+        const inputGroup = document.querySelector('.input-group');
+        if (inputGroup) {
+            const downloadBtn = document.createElement('button');
+            downloadBtn.id = 'downloadBtn';
+            downloadBtn.className = 'btn-primary';
+            downloadBtn.style.background = 'linear-gradient(135deg, #28a745 0%, #20c997 100%)';
+            downloadBtn.style.marginLeft = '10px';
+            downloadBtn.textContent = '⬇ Download Merged Video';
+            downloadBtn.disabled = true;
+            downloadBtn.onclick = () => this.downloadAndMergeSegments();
+            inputGroup.appendChild(downloadBtn);
+            
+            // Add progress area
+            const progressArea = document.createElement('div');
+            progressArea.id = 'downloadProgressArea';
+            progressArea.style.cssText = 'margin-top: 12px; display: none;';
+            progressArea.innerHTML = `
+                <div style="font-size: 13px; color: #495057; margin-bottom: 5px;" id="downloadStatusText">Preparing download...</div>
+                <div style="background: #e9ecef; border-radius: 20px; overflow: hidden; height: 8px;">
+                    <div id="downloadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745, #20c997); transition: width 0.3s;"></div>
+                </div>
+            `;
+            inputGroup.parentNode.insertBefore(progressArea, inputGroup.nextSibling);
+            
+            this.downloadBtn = downloadBtn;
+            this.progressArea = progressArea;
+            this.downloadStatusText = document.getElementById('downloadStatusText');
+            this.downloadProgressBar = document.getElementById('downloadProgressBar');
         }
     }
     
@@ -102,6 +120,36 @@ class DRMVideoPlayer {
             }
         });
         
+        // Add manifest request filter to add token to MPD request
+        const netEngine = this.player.getNetworkingEngine();
+        if (netEngine) {
+            netEngine.registerRequestFilter((type, request) => {
+                // Add token to manifest requests too!
+                if (type === window.shaka.net.NetworkingEngine.RequestType.MANIFEST) {
+                    if (this.currentToken) {
+                        this.log('🔐 Adding token to MANIFEST request');
+                        const separator = request.uris[0].includes('?') ? '&' : '?';
+                        request.uris[0] = `${request.uris[0]}${separator}token=${encodeURIComponent(this.currentToken)}`;
+                    }
+                }
+                
+                if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                    this.log('🔐 Adding token to license request');
+                    request.headers['pallycon-customdata-v2'] = this.currentToken;
+                    request.headers['Origin'] = window.location.origin;
+                    request.headers['X-Requested-With'] = 'XMLHttpRequest';
+                }
+                
+                // Also add token to segment requests if needed
+                if (type === window.shaka.net.NetworkingEngine.RequestType.SEGMENT) {
+                    if (this.currentToken && !request.uris[0].includes('token=')) {
+                        const separator = request.uris[0].includes('?') ? '&' : '?';
+                        request.uris[0] = `${request.uris[0]}${separator}token=${encodeURIComponent(this.currentToken)}`;
+                    }
+                }
+            });
+        }
+        
         // Error handler
         this.player.addEventListener('error', (event) => {
             this.handleShakaError(event.detail);
@@ -117,388 +165,382 @@ class DRMVideoPlayer {
         });
         
         this.player.addEventListener('trackschanged', () => {
-            this.updateQualitySelector();
+            const tracks = this.player.getVariantTracks();
+            this.log(`Tracks available: ${tracks.length}`);
+            if (tracks.length > 0) {
+                const heights = [...new Set(tracks.map(t => t.height))].sort((a,b)=>b-a);
+                this.log(`Qualities available: ${heights.join('p, ')}p`);
+            }
         });
         
         this.log('Shaka Player initialized');
     }
     
-    updateQualitySelector() {
-        if (!this.player) return;
-        const tracks = this.player.getVariantTracks();
-        const qualitySelect = document.getElementById('qualitySelector');
-        if (!qualitySelect) return;
-        
-        // Clear existing options except Auto
-        qualitySelect.innerHTML = '<option value="auto">Auto</option>';
-        
-        if (tracks.length === 0) return;
-        
-        // Get unique heights
-        const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a,b) => a-b);
-        
-        heights.forEach(height => {
-            const option = document.createElement('option');
-            option.value = height;
-            option.textContent = `${height}p`;
-            qualitySelect.appendChild(option);
-        });
-        
-        // Add quality change handler
-        qualitySelect.onchange = () => {
-            const selectedValue = qualitySelect.value;
-            if (selectedValue === 'auto') {
-                this.player.configure({ abr: { enabled: true } });
-                this.log('Quality set to Auto');
-                showNotification('Quality: Auto', 'info');
-            } else {
-                const targetHeight = parseInt(selectedValue);
-                const track = tracks.find(t => t.height === targetHeight);
-                if (track) {
-                    this.player.configure({ abr: { enabled: false } });
-                    this.player.selectVariantTrack(track);
-                    this.log(`Quality set to: ${targetHeight}p`);
-                    showNotification(`Quality: ${targetHeight}p`, 'info');
-                }
-            }
-        };
-        
-        this.log(`Quality options: ${heights.join('p, ')}p`);
-    }
-    
     async loadVideo() {
-        const inputUrl = this.apiUrlInput.value.trim();
+        const apiUrl = this.apiUrlInput.value.trim();
         
-        if (!inputUrl) {
-            this.updateStatus('error', 'Please enter a URL');
+        if (!apiUrl) {
+            this.updateStatus('error', 'Please enter an API URL');
             return;
         }
         
-        this.updateStatus('loading', 'Loading video...');
+        this.updateStatus('loading', 'Fetching video details...');
         this.playerContainer.style.display = 'none';
-        this.playerControlsBar.style.display = 'none';
+        
+        if (this.downloadBtn) this.downloadBtn.disabled = true;
         
         try {
-            // Detect URL type
-            const urlType = this.detectUrlType(inputUrl);
-            this.log(`Detected URL type: ${urlType}`);
+            const response = await fetch(apiUrl);
+            const data = await response.json();
             
-            if (urlType === 'api') {
-                await this.loadFromApi(inputUrl);
-            } else if (urlType === 'mpd') {
-                await this.loadMpdDirect(inputUrl);
-            } else if (urlType === 'm3u8') {
-                await this.loadM3u8(inputUrl);
-            } else if (urlType === 'mp4') {
-                await this.loadMp4(inputUrl);
-            } else if (urlType === 'youtube') {
-                await this.loadYouTube(inputUrl);
-            } else {
-                throw new Error('Unsupported URL format');
+            this.log('API Response:', data);
+            
+            if (!data.status || !data.data || !data.data.link) {
+                throw new Error('Invalid API response format');
             }
+            
+            const videoData = data.data.link;
+            const mpdUrl = videoData.file_url;
+            const token = videoData.token;
+            
+            if (!mpdUrl) {
+                throw new Error('No MPD URL found in response');
+            }
+            
+            this.currentMpdUrl = mpdUrl;
+            this.currentToken = token;
+            this.currentVideoData = videoData;
+            
+            this.log(`MPD URL: ${mpdUrl}`);
+            this.log(`Token: ${token.substring(0, 50)}...`);
+            
+            this.updateVideoInfo(videoData);
+            await this.playVideo(mpdUrl, token);
+            
+            if (this.downloadBtn) this.downloadBtn.disabled = false;
             
         } catch (error) {
             this.handleError(error);
+            if (this.downloadBtn) this.downloadBtn.disabled = true;
         }
     }
     
-    detectUrlType(url) {
-        url = url.toLowerCase();
-        
-        // Check for API pattern (contains /api/ or proxy)
-        if (url.includes('/api/') || url.includes('bypass') || url.includes('get_video_details')) {
-            return 'api';
-        }
-        
-        // Check for YouTube
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            return 'youtube';
-        }
-        
-        // Check for MPD
-        if (url.includes('.mpd') || url.includes('manifest')) {
-            return 'mpd';
-        }
-        
-        // Check for M3U8
-        if (url.includes('.m3u8') || url.includes('hls')) {
-            return 'm3u8';
-        }
-        
-        // Check for MP4
-        if (url.includes('.mp4') || url.includes('.mkv') || url.includes('.webm')) {
-            return 'mp4';
-        }
-        
-        return 'unknown';
-    }
-    
-    async loadFromApi(apiUrl) {
-        this.updateStatus('loading', 'Fetching video details from API...');
-        
-        const response = await fetch(apiUrl);
-        const data = await response.json();
-        
-        this.log('API Response:', data);
-        
-        if (!data.status || !data.data || !data.data.link) {
-            throw new Error('Invalid API response format');
-        }
-        
-        const videoData = data.data.link;
-        const mpdUrl = videoData.file_url;
-        const token = videoData.token;
-        
-        if (!mpdUrl) {
-            throw new Error('No MPD URL found in response');
-        }
-        
-        this.log(`MPD URL: ${mpdUrl}`);
-        this.log(`Token: ${token.substring(0, 50)}...`);
-        
-        // Store for download
-        this.currentVideoUrl = mpdUrl;
-        this.currentVideoType = 'mpd';
-        this.currentVideoTitle = videoData.title || 'drm_video';
-        
-        this.updateVideoInfo(videoData);
-        await this.playMpdWithToken(mpdUrl, token);
-    }
-    
-    async loadMpdDirect(mpdUrl) {
-        this.currentVideoUrl = mpdUrl;
-        this.currentVideoType = 'mpd';
-        this.currentVideoTitle = 'direct_mpd_video';
-        await this.playMpdWithToken(mpdUrl, null);
-    }
-    
-    async playMpdWithToken(mpdUrl, token) {
+    async playVideo(mpdUrl, token) {
         this.updateStatus('loading', 'Loading DRM video...');
         
         try {
-            if (!this.player) {
-                this.initShakaPlayer();
-            }
-            
-            const netEngine = this.player.getNetworkingEngine();
-            netEngine.clearAllRequestFilters();
-            
-            if (token) {
-                // EXACT REQUEST FILTER FROM ORIGINAL SITE
-                netEngine.registerRequestFilter((type, request) => {
-                    if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                        this.log('🔐 Adding token to license request');
-                        request.headers['pallycon-customdata-v2'] = token;
-                        request.headers['Origin'] = window.location.origin;
-                        request.headers['X-Requested-With'] = 'XMLHttpRequest';
-                    }
-                });
-            }
-            
-            // Load MPD with token in URL if present
-            let urlWithToken = mpdUrl;
-            if (token) {
-                urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-            }
-            this.log(`Loading MPD: ${urlWithToken}`);
+            // Load MPD with token in URL
+            const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+            this.log(`Loading MPD with token...`);
             
             await this.player.load(urlWithToken);
             
             this.playerContainer.style.display = 'block';
-            this.playerControlsBar.style.display = 'flex';
             this.updateStatus('success', 'Video loaded! Playing...');
-            
-            // Update quality selector after load
-            setTimeout(() => this.updateQualitySelector(), 1000);
             
             // Auto-play
             this.videoElement.play().catch(e => {
-                this.log('Auto-play blocked, user must click play');
-                showNotification('Click play to start video', 'info');
+                this.log('Auto-play blocked, trying muted...');
+                this.videoElement.muted = true;
+                this.videoElement.play().catch(err => {
+                    this.log('Auto-play failed, click play button');
+                });
             });
             
         } catch (error) {
-            this.log('Failed to load MPD:', error);
+            this.log('Failed to load video:', error);
+            this.updateStatus('error', `Failed: ${error.message}`);
             throw error;
         }
     }
     
-    async loadM3u8(url) {
-        this.updateStatus('loading', 'Loading HLS stream...');
-        this.currentVideoUrl = url;
-        this.currentVideoType = 'm3u8';
-        this.currentVideoTitle = 'hls_video';
-        
-        this.playerContainer.style.display = 'block';
-        this.playerControlsBar.style.display = 'flex';
-        
-        // Use Hls.js for M3U8
-        if (Hls.isSupported()) {
-            const hls = new Hls();
-            hls.loadSource(url);
-            hls.attachMedia(this.videoElement);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                this.log('HLS manifest parsed');
-                this.updateStatus('success', 'HLS stream loaded');
-                this.videoElement.play().catch(e => this.log('Auto-play blocked'));
-                
-                // Populate quality options for HLS
-                const levels = hls.levels;
-                const qualitySelect = document.getElementById('qualitySelector');
-                if (qualitySelect && levels.length > 0) {
-                    qualitySelect.innerHTML = '<option value="auto">Auto</option>';
-                    levels.forEach((level, idx) => {
-                        const option = document.createElement('option');
-                        option.value = idx;
-                        option.textContent = `${level.height}p`;
-                        qualitySelect.appendChild(option);
-                    });
-                    qualitySelect.onchange = () => {
-                        const selected = qualitySelect.value;
-                        if (selected === 'auto') {
-                            hls.currentLevel = -1;
-                        } else {
-                            hls.currentLevel = parseInt(selected);
-                        }
-                    };
-                }
-            });
-            hls.on(Hls.Events.ERROR, (event, data) => {
-                this.log('HLS Error:', data);
-            });
-            window.currentHls = hls;
-        } else if (this.videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS support (Safari)
-            this.videoElement.src = url;
-            this.videoElement.addEventListener('loadedmetadata', () => {
-                this.updateStatus('success', 'HLS stream loaded');
-                this.videoElement.play().catch(e => this.log('Auto-play blocked'));
-            });
-        } else {
-            throw new Error('HLS not supported in this browser');
-        }
-        
-        this.updateVideoInfo({ file_url: url, type: 'HLS Stream' });
-    }
-    
-    async loadMp4(url) {
-        this.updateStatus('loading', 'Loading MP4 video...');
-        this.currentVideoUrl = url;
-        this.currentVideoType = 'mp4';
-        this.currentVideoTitle = this.extractFilename(url) || 'video';
-        
-        this.playerContainer.style.display = 'block';
-        this.playerControlsBar.style.display = 'flex';
-        
-        this.videoElement.src = url;
-        this.videoElement.addEventListener('loadedmetadata', () => {
-            this.updateStatus('success', 'MP4 video loaded');
-            this.log(`Video duration: ${this.videoElement.duration}s`);
-            this.videoElement.play().catch(e => this.log('Auto-play blocked'));
-            
-            // MP4 quality selector (only one quality usually)
-            const qualitySelect = document.getElementById('qualitySelector');
-            if (qualitySelect) {
-                qualitySelect.innerHTML = '<option value="auto">Auto (Source)</option>';
-            }
-        });
-        
-        this.updateVideoInfo({ file_url: url, type: 'MP4 Video' });
-    }
-    
-    async loadYouTube(url) {
-        this.updateStatus('loading', 'Loading YouTube video...');
-        this.currentVideoUrl = url;
-        this.currentVideoType = 'youtube';
-        this.currentVideoTitle = 'youtube_video';
-        
-        this.playerContainer.style.display = 'block';
-        this.playerControlsBar.style.display = 'flex';
-        
-        // Extract video ID
-        let videoId = '';
-        const patterns = [
-            /(?:youtube\.com\/watch\?v=)([^&]+)/,
-            /(?:youtu\.be\/)([^?]+)/,
-            /(?:youtube\.com\/embed\/)([^?]+)/
-        ];
-        
-        for (const pattern of patterns) {
-            const match = url.match(pattern);
-            if (match) {
-                videoId = match[1];
-                break;
-            }
-        }
-        
-        if (!videoId) {
-            throw new Error('Invalid YouTube URL');
-        }
-        
-        // Use YouTube embed with iframe API or simple embed
-        const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1`;
-        
-        // Replace video element with iframe for YouTube
-        const wrapper = document.querySelector('.video-wrapper');
-        const oldVideo = this.videoElement;
-        const iframe = document.createElement('iframe');
-        iframe.id = 'youtubeIframe';
-        iframe.width = '100%';
-        iframe.height = '400px';
-        iframe.src = embedUrl;
-        iframe.frameBorder = '0';
-        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
-        iframe.allowFullscreen = true;
-        
-        oldVideo.style.display = 'none';
-        wrapper.appendChild(iframe);
-        
-        this.updateStatus('success', 'YouTube video loaded');
-        this.log(`YouTube Video ID: ${videoId}`);
-        
-        this.updateVideoInfo({ file_url: url, type: 'YouTube Video', video_id: videoId });
-        
-        // Disable download for YouTube (copyright)
-        const downloadBtn = document.getElementById('downloadBtn');
-        if (downloadBtn) {
-            downloadBtn.disabled = true;
-            downloadBtn.title = 'YouTube download not available due to copyright';
-        }
-    }
-    
-    handleDownload() {
-        if (this.currentVideoType === 'youtube') {
-            showNotification('YouTube download not supported due to copyright restrictions', 'error');
+    // NEW: Download and merge all segments
+    async downloadAndMergeSegments() {
+        if (!this.currentMpdUrl || !this.currentToken) {
+            this.updateStatus('error', 'No video loaded. Please load a video first.');
             return;
         }
         
-        if (this.currentVideoUrl && this.currentVideoType) {
-            this.log('Starting download for:', this.currentVideoUrl);
-            downloadVideo(this.currentVideoUrl, this.currentVideoType, this.currentVideoTitle);
-        } else {
-            showNotification('No video loaded to download', 'error');
+        if (this.downloadBtn) this.downloadBtn.disabled = true;
+        if (this.progressArea) this.progressArea.style.display = 'block';
+        if (this.downloadStatusText) this.downloadStatusText.innerText = 'Fetching MPD manifest...';
+        if (this.downloadProgressBar) this.downloadProgressBar.style.width = '0%';
+        
+        this.log("Starting full segment download & merge...");
+        
+        try {
+            // 1. Fetch MPD with token
+            const mpdUrlWithToken = `${this.currentMpdUrl}${this.currentMpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(this.currentToken)}`;
+            const mpdResponse = await fetch(mpdUrlWithToken, {
+                headers: {
+                    'Origin': window.location.origin,
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            const mpdText = await mpdResponse.text();
+            this.log("MPD fetched, parsing segments...");
+            
+            // 2. Parse MPD
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(mpdText, "text/xml");
+            
+            // Get base URL
+            let baseUrl = '';
+            const baseUrlElem = xmlDoc.querySelector('BaseURL');
+            if (baseUrlElem) baseUrl = baseUrlElem.textContent.trim();
+            
+            // Find video AdaptationSet
+            const periods = xmlDoc.querySelectorAll('Period');
+            let segmentUrls = [];
+            let initializationUrl = null;
+            
+            for (let period of periods) {
+                const adaptationSets = period.querySelectorAll('AdaptationSet');
+                for (let as of adaptationSets) {
+                    const mimeType = as.getAttribute('mimeType') || '';
+                    if (mimeType.includes('video') || segmentUrls.length === 0) {
+                        const representation = as.querySelector('Representation');
+                        if (!representation) continue;
+                        
+                        // Check for SegmentTemplate
+                        let segmentTemplate = representation.querySelector('SegmentTemplate');
+                        if (!segmentTemplate) segmentTemplate = as.querySelector('SegmentTemplate');
+                        
+                        if (segmentTemplate) {
+                            const mediaTemplate = segmentTemplate.getAttribute('media');
+                            const initialization = segmentTemplate.getAttribute('initialization');
+                            const startNumber = parseInt(segmentTemplate.getAttribute('startNumber') || '1');
+                            
+                            // Get initialization URL
+                            if (initialization) {
+                                let initUrl = initialization.replace('$RepresentationID$', representation.getAttribute('id') || '');
+                                initUrl = initUrl.replace('$Bandwidth$', representation.getAttribute('bandwidth') || '');
+                                initUrl = this.resolveUrl(initUrl, baseUrl, this.currentMpdUrl);
+                                initializationUrl = initUrl;
+                            }
+                            
+                            // Check for SegmentTimeline
+                            const timeline = segmentTemplate.querySelector('SegmentTimeline');
+                            if (timeline) {
+                                const sElements = timeline.querySelectorAll('S');
+                                let idx = startNumber;
+                                for (let s of sElements) {
+                                    const repeat = parseInt(s.getAttribute('r') || '0');
+                                    for (let i = 0; i <= repeat; i++) {
+                                        let segUrl = mediaTemplate.replace('$Number$', idx);
+                                        segUrl = segUrl.replace('$RepresentationID$', representation.getAttribute('id') || '');
+                                        segUrl = segUrl.replace('$Bandwidth$', representation.getAttribute('bandwidth') || '');
+                                        segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
+                                        segmentUrls.push(segUrl);
+                                        idx++;
+                                    }
+                                }
+                            } else {
+                                // Estimate segments (up to 500)
+                                for (let i = startNumber; i < startNumber + 500; i++) {
+                                    let segUrl = mediaTemplate.replace('$Number$', i);
+                                    segUrl = segUrl.replace('$RepresentationID$', representation.getAttribute('id') || '');
+                                    segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
+                                    segmentUrls.push(segUrl);
+                                }
+                            }
+                            break;
+                        }
+                        
+                        // Check for SegmentList
+                        const segmentList = representation.querySelector('SegmentList');
+                        if (segmentList) {
+                            const segUrls = segmentList.querySelectorAll('SegmentURL');
+                            for (let seg of segUrls) {
+                                let mediaUrl = seg.getAttribute('media');
+                                mediaUrl = this.resolveUrl(mediaUrl, baseUrl, this.currentMpdUrl);
+                                segmentUrls.push(mediaUrl);
+                            }
+                            
+                            const initSeg = segmentList.querySelector('Initialization');
+                            if (initSeg && initSeg.getAttribute('sourceURL')) {
+                                initializationUrl = this.resolveUrl(initSeg.getAttribute('sourceURL'), baseUrl, this.currentMpdUrl);
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (segmentUrls.length > 0) break;
+            }
+            
+            if (segmentUrls.length === 0) {
+                throw new Error("No segment URLs extracted from MPD");
+            }
+            
+            this.log(`Extracted ${segmentUrls.length} segment URLs`);
+            if (initializationUrl) this.log(`Init URL: ${initializationUrl.substring(0, 80)}...`);
+            
+            // Download and merge all segments
+            let mergedBuffer = new Uint8Array(0);
+            
+            // Download initialization segment first
+            if (initializationUrl) {
+                if (this.downloadStatusText) this.downloadStatusText.innerText = 'Downloading initialization segment...';
+                try {
+                    const initData = await this.downloadSegmentWithToken(initializationUrl);
+                    mergedBuffer = this.concatBuffers(mergedBuffer, initData);
+                    this.log(`Init segment: ${initData.length} bytes`);
+                } catch (e) {
+                    this.log(`Init segment failed: ${e.message}, continuing...`);
+                }
+            }
+            
+            // Download all media segments
+            let downloaded = 0;
+            for (let i = 0; i < segmentUrls.length; i++) {
+                const segUrl = segmentUrls[i];
+                if (this.downloadStatusText) {
+                    this.downloadStatusText.innerText = `Downloading segment ${i+1}/${segmentUrls.length}`;
+                }
+                if (this.downloadProgressBar) {
+                    const percent = (i / segmentUrls.length) * 100;
+                    this.downloadProgressBar.style.width = `${percent}%`;
+                }
+                
+                try {
+                    const segData = await this.downloadSegmentWithToken(segUrl);
+                    mergedBuffer = this.concatBuffers(mergedBuffer, segData);
+                    downloaded++;
+                } catch (err) {
+                    this.log(`Segment ${i+1} failed: ${err.message}, stopping at ${downloaded} segments`);
+                    break;
+                }
+            }
+            
+            if (this.downloadProgressBar) this.downloadProgressBar.style.width = '100%';
+            if (this.downloadStatusText) {
+                this.downloadStatusText.innerText = `Creating video file from ${downloaded} segments...`;
+            }
+            
+            // Determine file extension
+            const firstSeg = segmentUrls[0] || '';
+            const isTs = firstSeg.includes('.ts') || firstSeg.endsWith('.ts');
+            const extension = isTs ? 'ts' : 'mp4';
+            const mimeType = isTs ? 'video/mp2t' : 'video/mp4';
+            
+            // Create and trigger download
+            const blob = new Blob([mergedBuffer], { type: mimeType });
+            const downloadUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const fileName = this.currentVideoData?.title 
+                ? this.currentVideoData.title.replace(/[^a-z0-9]/gi, '_') 
+                : `video_${Date.now()}`;
+            a.download = `${fileName}_merged.${extension}`;
+            a.href = downloadUrl;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(downloadUrl);
+            
+            if (this.downloadStatusText) {
+                const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+                this.downloadStatusText.innerText = `✅ Download complete! ${sizeMB} MB saved.`;
+            }
+            this.log(`✅ Download finished: ${downloaded}/${segmentUrls.length} segments merged, ${(blob.size / (1024*1024)).toFixed(2)} MB`);
+            this.updateStatus('success', 'Video downloaded & merged!');
+            
+        } catch (error) {
+            this.log("Download error:", error);
+            if (this.downloadStatusText) {
+                this.downloadStatusText.innerText = `❌ Error: ${error.message}`;
+            }
+            this.updateStatus('error', `Download failed: ${error.message}`);
+        } finally {
+            if (this.downloadBtn) this.downloadBtn.disabled = false;
+            setTimeout(() => {
+                if (this.progressArea) this.progressArea.style.display = 'none';
+            }, 5000);
         }
+    }
+    
+    async downloadSegmentWithToken(url) {
+        const separator = url.includes('?') ? '&' : '?';
+        const urlWithToken = `${url}${separator}token=${encodeURIComponent(this.currentToken)}`;
+        
+        const response = await fetch(urlWithToken, {
+            headers: {
+                'Origin': window.location.origin,
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        return new Uint8Array(await response.arrayBuffer());
+    }
+    
+    resolveUrl(relativeUrl, baseUrl, mpdBaseUrl) {
+        if (!relativeUrl) return '';
+        if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
+            return relativeUrl;
+        }
+        
+        // Try baseUrl from MPD
+        if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
+            const basePath = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+            return basePath + relativeUrl;
+        }
+        
+        // Fallback to MPD directory
+        const mpdPath = mpdBaseUrl.substring(0, mpdBaseUrl.lastIndexOf('/') + 1);
+        return mpdPath + relativeUrl;
+    }
+    
+    concatBuffers(a, b) {
+        const result = new Uint8Array(a.length + b.length);
+        result.set(a, 0);
+        result.set(b, a.length);
+        return result;
+    }
+    
+    handleShakaError(error) {
+        this.log('Shaka Error:', error);
+        
+        let errorMessage = '';
+        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
+        
+        switch(errorCode) {
+            case 6001:
+                errorMessage = 'Manifest request failed - Token may be invalid or expired';
+                this.log('💡 Make sure token is added to MPD URL');
+                break;
+            case 6007:
+                errorMessage = 'License request failed - Token may be expired or invalid';
+                this.log('💡 Check if token is valid');
+                this.log('💡 Verify license server is accessible: ' + this.licenseServerUrl);
+                break;
+            case 6012:
+                errorMessage = 'License server not configured';
+                break;
+            case 1002:
+                errorMessage = 'Network error - Check CORS or server availability';
+                break;
+            default:
+                errorMessage = error.detail?.message || error.message || 'Unknown error';
+        }
+        
+        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
     }
     
     updateVideoInfo(videoData) {
         let html = `
             <div style="display: grid; gap: 8px;">
-                <div><strong>🎬 Video URL:</strong><br>${this.truncateUrl(videoData.file_url || videoData.url || this.currentVideoUrl, 80)}</div>
+                <div><strong>🎬 MPD URL:</strong><br>${this.truncateUrl(videoData.file_url, 80)}</div>
                 <div><strong>🔑 License Server:</strong><br>${this.licenseServerUrl}</div>
-                <div><strong>📺 Type:</strong> ${videoData.type || this.currentVideoType || 'DRM MPD'}</div>
+                <div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 60)}...</div>
+                <div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
+                     <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
+                     <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>
+                <div><strong>⬇ Download:</strong> Click green button after video loads</div>
             </div>
         `;
-        
-        if (videoData.token) {
-            html += `<div><strong>🆔 Token:</strong><br>${videoData.token.substring(0, 60)}...</div>`;
-        }
-        
-        if (videoData.ad_enable !== undefined) {
-            html += `<div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
-                     <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
-                     <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>`;
-        }
-        
         this.videoInfo.innerHTML = html;
     }
     
@@ -512,36 +554,11 @@ class DRMVideoPlayer {
                                                type === 'success' ? '#28a745' : '#667eea';
     }
     
-    handleShakaError(error) {
-        this.log('Shaka Error:', error);
-        
-        let errorMessage = '';
-        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
-        
-        switch(errorCode) {
-            case 6007:
-                errorMessage = 'License request failed - Token may be expired or invalid';
-                break;
-            case 6012:
-                errorMessage = 'License server not configured';
-                break;
-            case 1002:
-                errorMessage = 'Network error - Check CORS or server availability';
-                break;
-            default:
-                errorMessage = error.detail?.message || error.message || 'Unknown error';
-        }
-        
-        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
-        showNotification(`Playback error: ${errorMessage}`, 'error');
-    }
-    
     handleError(error) {
         console.error('Error:', error);
         let errorMessage = error instanceof Error ? error.message : String(error);
         this.updateStatus('error', `Error: ${errorMessage}`);
         this.log('ERROR:', errorMessage);
-        showNotification(`Error: ${errorMessage}`, 'error');
     }
     
     log(...args) {
@@ -566,20 +583,9 @@ class DRMVideoPlayer {
         if (url.length <= maxLen) return url;
         return url.substring(0, maxLen - 20) + '...' + url.substring(url.length - 15);
     }
-    
-    extractFilename(url) {
-        try {
-            const urlObj = new URL(url);
-            const pathname = urlObj.pathname;
-            const filename = pathname.split('/').pop();
-            return filename.replace(/\.[^/.]+$/, '') || 'video';
-        } catch {
-            return 'video';
-        }
-    }
 }
 
-// Initialize when DOM ready
+// Initialize
 window.addEventListener('DOMContentLoaded', () => {
     if (window.shaka) {
         window.drmPlayer = new DRMVideoPlayer();

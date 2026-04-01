@@ -9,16 +9,63 @@ class DRMVideoPlayer {
         this.statusIcon = document.querySelector('.status-icon');
         this.debugLog = document.getElementById('debugLog');
         this.videoInfo = document.getElementById('videoInfo');
+        this.downloadSection = document.getElementById('downloadSection');
         
-        // EXACT LICENSE SERVER FROM ORIGINAL SITE
+        // License server
         this.licenseServerUrl = 'https://license.videocrypt.com/validateLicense';
         
-        // Store current video data for download
+        // Store current data
         this.currentMpdUrl = null;
         this.currentToken = null;
         this.currentVideoData = null;
+        this.availableQualities = [];
+        this.currentQuality = null;
+        this.isLocked = false;
+        this.isRotated = false;
+        
+        // Custom controls elements
+        this.initCustomControls();
         
         this.init();
+    }
+    
+    initCustomControls() {
+        this.playPauseBtn = document.getElementById('playPauseBtn');
+        this.seekSlider = document.getElementById('seekSlider');
+        this.currentTimeSpan = document.getElementById('currentTime');
+        this.durationSpan = document.getElementById('duration');
+        this.volumeSlider = document.getElementById('volumeSlider');
+        this.volumeBtn = document.getElementById('volumeBtn');
+        this.fullscreenBtn = document.getElementById('fullscreenBtn');
+        this.qualitySelect = document.getElementById('qualitySelect');
+        this.speedSelect = document.getElementById('speedSelect');
+        this.pipBtn = document.getElementById('pipBtn');
+        this.rotateBtn = document.getElementById('rotateBtn');
+        this.lockBtn = document.getElementById('lockBtn');
+        this.progressFilled = document.getElementById('progressFilled');
+        this.progressBuffer = document.getElementById('progressBuffer');
+        this.videoTitle = document.getElementById('videoTitle');
+        this.downloadQualitySelect = document.getElementById('downloadQualitySelect');
+        this.downloadBtn = document.getElementById('downloadBtn');
+        
+        // Custom controls visibility
+        const wrapper = document.querySelector('.video-wrapper');
+        const controls = document.getElementById('customControls');
+        
+        if (wrapper && controls) {
+            let timeout;
+            wrapper.addEventListener('mousemove', () => {
+                controls.classList.add('active');
+                clearTimeout(timeout);
+                timeout = setTimeout(() => {
+                    if (!this.isLocked) controls.classList.remove('active');
+                }, 2000);
+            });
+            
+            wrapper.addEventListener('mouseleave', () => {
+                if (!this.isLocked) controls.classList.remove('active');
+            });
+        }
     }
     
     init() {
@@ -28,46 +75,32 @@ class DRMVideoPlayer {
             if (e.key === 'Enter') this.loadVideo();
         });
         
-        // Add download button if it doesn't exist
-        this.addDownloadButton();
-        
-        this.log('Player initialized. Ready to load video.');
-        this.log(`License server: ${this.licenseServerUrl}`);
+        this.setupEventListeners();
+        this.log('Player initialized');
     }
     
-    addDownloadButton() {
-        // Check if download button already exists
-        if (document.getElementById('downloadBtn')) return;
+    setupEventListeners() {
+        // Video events
+        this.videoElement.addEventListener('timeupdate', () => this.updateProgress());
+        this.videoElement.addEventListener('loadedmetadata', () => this.onVideoLoaded());
+        this.videoElement.addEventListener('play', () => this.playPauseBtn.textContent = '⏸');
+        this.videoElement.addEventListener('pause', () => this.playPauseBtn.textContent = '▶');
+        this.videoElement.addEventListener('volumechange', () => this.updateVolumeIcon());
         
-        const inputGroup = document.querySelector('.input-group');
-        if (inputGroup) {
-            const downloadBtn = document.createElement('button');
-            downloadBtn.id = 'downloadBtn';
-            downloadBtn.className = 'btn-primary';
-            downloadBtn.style.background = 'linear-gradient(135deg, #28a745 0%, #20c997 100%)';
-            downloadBtn.style.marginLeft = '10px';
-            downloadBtn.textContent = '⬇ Download Merged Video';
-            downloadBtn.disabled = true;
-            downloadBtn.onclick = () => this.downloadAndMergeSegments();
-            inputGroup.appendChild(downloadBtn);
-            
-            // Add progress area
-            const progressArea = document.createElement('div');
-            progressArea.id = 'downloadProgressArea';
-            progressArea.style.cssText = 'margin-top: 12px; display: none;';
-            progressArea.innerHTML = `
-                <div style="font-size: 13px; color: #495057; margin-bottom: 5px;" id="downloadStatusText">Preparing download...</div>
-                <div style="background: #e9ecef; border-radius: 20px; overflow: hidden; height: 8px;">
-                    <div id="downloadProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745, #20c997); transition: width 0.3s;"></div>
-                </div>
-            `;
-            inputGroup.parentNode.insertBefore(progressArea, inputGroup.nextSibling);
-            
-            this.downloadBtn = downloadBtn;
-            this.progressArea = progressArea;
-            this.downloadStatusText = document.getElementById('downloadStatusText');
-            this.downloadProgressBar = document.getElementById('downloadProgressBar');
-        }
+        // Control buttons
+        this.playPauseBtn.addEventListener('click', () => this.togglePlayPause());
+        this.seekSlider.addEventListener('input', (e) => this.seek(e.target.value));
+        this.volumeSlider.addEventListener('input', (e) => this.setVolume(e.target.value));
+        this.volumeBtn.addEventListener('click', () => this.toggleMute());
+        this.fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
+        this.speedSelect.addEventListener('change', (e) => this.setPlaybackRate(e.target.value));
+        this.pipBtn.addEventListener('click', () => this.togglePictureInPicture());
+        this.rotateBtn.addEventListener('click', () => this.toggleRotate());
+        this.lockBtn.addEventListener('click', () => this.toggleLock());
+        this.downloadBtn.addEventListener('click', () => this.downloadAndMergeSegments());
+        
+        // Buffer progress
+        this.videoElement.addEventListener('progress', () => this.updateBuffer());
     }
     
     initShakaPlayer() {
@@ -78,13 +111,10 @@ class DRMVideoPlayer {
             return;
         }
         
-        // Install polyfills
         if (window.shaka.polyfill) {
             window.shaka.polyfill.installAll();
-            this.log('Shaka polyfills installed');
         }
         
-        // Check browser support
         if (!window.shaka.Player.isBrowserSupported()) {
             this.updateStatus('error', 'Browser does not support DRM playback');
             return;
@@ -92,7 +122,6 @@ class DRMVideoPlayer {
         
         this.player = new window.shaka.Player(this.videoElement);
         
-        // Configure DRM with license server
         this.player.configure({
             drm: {
                 servers: {
@@ -120,27 +149,23 @@ class DRMVideoPlayer {
             }
         });
         
-        // Add manifest request filter to add token to MPD request
+        // Add request filters
         const netEngine = this.player.getNetworkingEngine();
         if (netEngine) {
             netEngine.registerRequestFilter((type, request) => {
-                // Add token to manifest requests too!
                 if (type === window.shaka.net.NetworkingEngine.RequestType.MANIFEST) {
-                    if (this.currentToken) {
-                        this.log('🔐 Adding token to MANIFEST request');
+                    if (this.currentToken && !request.uris[0].includes('token=')) {
                         const separator = request.uris[0].includes('?') ? '&' : '?';
                         request.uris[0] = `${request.uris[0]}${separator}token=${encodeURIComponent(this.currentToken)}`;
                     }
                 }
                 
                 if (type === window.shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                    this.log('🔐 Adding token to license request');
                     request.headers['pallycon-customdata-v2'] = this.currentToken;
                     request.headers['Origin'] = window.location.origin;
                     request.headers['X-Requested-With'] = 'XMLHttpRequest';
                 }
                 
-                // Also add token to segment requests if needed
                 if (type === window.shaka.net.NetworkingEngine.RequestType.SEGMENT) {
                     if (this.currentToken && !request.uris[0].includes('token=')) {
                         const separator = request.uris[0].includes('?') ? '&' : '?';
@@ -150,28 +175,8 @@ class DRMVideoPlayer {
             });
         }
         
-        // Error handler
-        this.player.addEventListener('error', (event) => {
-            this.handleShakaError(event.detail);
-        });
-        
-        // Event listeners
-        this.player.addEventListener('buffering', () => {
-            this.log('Buffering...');
-        });
-        
-        this.player.addEventListener('loading', () => {
-            this.log('Loading...');
-        });
-        
-        this.player.addEventListener('trackschanged', () => {
-            const tracks = this.player.getVariantTracks();
-            this.log(`Tracks available: ${tracks.length}`);
-            if (tracks.length > 0) {
-                const heights = [...new Set(tracks.map(t => t.height))].sort((a,b)=>b-a);
-                this.log(`Qualities available: ${heights.join('p, ')}p`);
-            }
-        });
+        this.player.addEventListener('error', (event) => this.handleShakaError(event.detail));
+        this.player.addEventListener('trackschanged', () => this.updateQualityOptions());
         
         this.log('Shaka Player initialized');
     }
@@ -186,14 +191,11 @@ class DRMVideoPlayer {
         
         this.updateStatus('loading', 'Fetching video details...');
         this.playerContainer.style.display = 'none';
-        
-        if (this.downloadBtn) this.downloadBtn.disabled = true;
+        this.downloadSection.style.display = 'none';
         
         try {
             const response = await fetch(apiUrl);
             const data = await response.json();
-            
-            this.log('API Response:', data);
             
             if (!data.status || !data.data || !data.data.link) {
                 throw new Error('Invalid API response format');
@@ -203,25 +205,19 @@ class DRMVideoPlayer {
             const mpdUrl = videoData.file_url;
             const token = videoData.token;
             
-            if (!mpdUrl) {
-                throw new Error('No MPD URL found in response');
-            }
+            if (!mpdUrl) throw new Error('No MPD URL found');
             
             this.currentMpdUrl = mpdUrl;
             this.currentToken = token;
             this.currentVideoData = videoData;
             
-            this.log(`MPD URL: ${mpdUrl}`);
-            this.log(`Token: ${token.substring(0, 50)}...`);
+            if (this.videoTitle) this.videoTitle.textContent = videoData.title || 'DRM Video';
             
             this.updateVideoInfo(videoData);
             await this.playVideo(mpdUrl, token);
             
-            if (this.downloadBtn) this.downloadBtn.disabled = false;
-            
         } catch (error) {
             this.handleError(error);
-            if (this.downloadBtn) this.downloadBtn.disabled = true;
         }
     }
     
@@ -229,22 +225,17 @@ class DRMVideoPlayer {
         this.updateStatus('loading', 'Loading DRM video...');
         
         try {
-            // Load MPD with token in URL
             const urlWithToken = `${mpdUrl}${mpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-            this.log(`Loading MPD with token...`);
-            
             await this.player.load(urlWithToken);
             
             this.playerContainer.style.display = 'block';
-            this.updateStatus('success', 'Video loaded! Playing...');
+            this.downloadSection.style.display = 'block';
+            this.updateStatus('success', 'Video loaded! Ready to play');
             
-            // Auto-play
             this.videoElement.play().catch(e => {
-                this.log('Auto-play blocked, trying muted...');
+                this.log('Auto-play blocked');
                 this.videoElement.muted = true;
-                this.videoElement.play().catch(err => {
-                    this.log('Auto-play failed, click play button');
-                });
+                this.videoElement.play();
             });
             
         } catch (error) {
@@ -254,211 +245,234 @@ class DRMVideoPlayer {
         }
     }
     
-    // NEW: Download and merge all segments
-    async downloadAndMergeSegments() {
-        if (!this.currentMpdUrl || !this.currentToken) {
-            this.updateStatus('error', 'No video loaded. Please load a video first.');
+    updateQualityOptions() {
+        if (!this.player) return;
+        
+        const tracks = this.player.getVariantTracks();
+        const qualities = [];
+        
+        tracks.forEach(track => {
+            if (track.height && !qualities.includes(track.height)) {
+                qualities.push(track.height);
+            }
+        });
+        
+        qualities.sort((a, b) => a - b);
+        this.availableQualities = qualities;
+        
+        // Update quality select
+        this.qualitySelect.innerHTML = '<option value="auto">Auto Quality</option>';
+        qualities.forEach(height => {
+            this.qualitySelect.innerHTML += `<option value="${height}">${height}p</option>`;
+        });
+        
+        // Update download quality select
+        this.downloadQualitySelect.innerHTML = '<option value="">Select quality to download...</option>';
+        qualities.forEach(height => {
+            this.downloadQualitySelect.innerHTML += `<option value="${height}">${height}p</option>`;
+        });
+        
+        this.qualitySelect.addEventListener('change', (e) => this.changeQuality(e.target.value));
+    }
+    
+    changeQuality(height) {
+        if (!this.player) return;
+        
+        const tracks = this.player.getVariantTracks();
+        let selectedTrack = null;
+        
+        if (height === 'auto') {
+            this.player.configure({ abr: { enabled: true } });
+            this.log('Quality set to Auto');
             return;
         }
         
-        if (this.downloadBtn) this.downloadBtn.disabled = true;
-        if (this.progressArea) this.progressArea.style.display = 'block';
-        if (this.downloadStatusText) this.downloadStatusText.innerText = 'Fetching MPD manifest...';
-        if (this.downloadProgressBar) this.downloadProgressBar.style.width = '0%';
+        this.player.configure({ abr: { enabled: false } });
         
-        this.log("Starting full segment download & merge...");
+        for (let track of tracks) {
+            if (track.height === parseInt(height)) {
+                selectedTrack = track;
+                break;
+            }
+        }
+        
+        if (selectedTrack) {
+            this.player.selectVariantTrack(selectedTrack);
+            this.currentQuality = height;
+            this.log(`Quality changed to ${height}p`);
+        }
+    }
+    
+    async downloadAndMergeSegments() {
+        const selectedQuality = this.downloadQualitySelect.value;
+        if (!selectedQuality) {
+            this.updateStatus('error', 'Please select a quality to download');
+            return;
+        }
+        
+        if (!this.currentMpdUrl || !this.currentToken) {
+            this.updateStatus('error', 'No video loaded');
+            return;
+        }
+        
+        this.downloadBtn.disabled = true;
+        const progressArea = document.getElementById('downloadProgressArea');
+        const progressBar = document.getElementById('downloadProgressBar');
+        const statusText = document.getElementById('downloadStatusText');
+        
+        progressArea.style.display = 'block';
+        progressBar.style.width = '0%';
+        statusText.innerText = 'Fetching manifest...';
         
         try {
-            // 1. Fetch MPD with token
             const mpdUrlWithToken = `${this.currentMpdUrl}${this.currentMpdUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(this.currentToken)}`;
-            const mpdResponse = await fetch(mpdUrlWithToken, {
-                headers: {
-                    'Origin': window.location.origin,
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
-            });
+            const mpdResponse = await fetch(mpdUrlWithToken);
             const mpdText = await mpdResponse.text();
-            this.log("MPD fetched, parsing segments...");
             
-            // 2. Parse MPD
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(mpdText, "text/xml");
             
-            // Get base URL
+            // Find the representation with selected quality
+            let selectedRepresentation = null;
             let baseUrl = '';
+            
             const baseUrlElem = xmlDoc.querySelector('BaseURL');
             if (baseUrlElem) baseUrl = baseUrlElem.textContent.trim();
             
-            // Find video AdaptationSet
             const periods = xmlDoc.querySelectorAll('Period');
-            let segmentUrls = [];
-            let initializationUrl = null;
             
             for (let period of periods) {
                 const adaptationSets = period.querySelectorAll('AdaptationSet');
                 for (let as of adaptationSets) {
                     const mimeType = as.getAttribute('mimeType') || '';
-                    if (mimeType.includes('video') || segmentUrls.length === 0) {
-                        const representation = as.querySelector('Representation');
-                        if (!representation) continue;
-                        
-                        // Check for SegmentTemplate
-                        let segmentTemplate = representation.querySelector('SegmentTemplate');
-                        if (!segmentTemplate) segmentTemplate = as.querySelector('SegmentTemplate');
-                        
-                        if (segmentTemplate) {
-                            const mediaTemplate = segmentTemplate.getAttribute('media');
-                            const initialization = segmentTemplate.getAttribute('initialization');
-                            const startNumber = parseInt(segmentTemplate.getAttribute('startNumber') || '1');
-                            
-                            // Get initialization URL
-                            if (initialization) {
-                                let initUrl = initialization.replace('$RepresentationID$', representation.getAttribute('id') || '');
-                                initUrl = initUrl.replace('$Bandwidth$', representation.getAttribute('bandwidth') || '');
-                                initUrl = this.resolveUrl(initUrl, baseUrl, this.currentMpdUrl);
-                                initializationUrl = initUrl;
+                    if (mimeType.includes('video')) {
+                        const representations = as.querySelectorAll('Representation');
+                        for (let rep of representations) {
+                            const height = rep.getAttribute('height');
+                            if (height === selectedQuality) {
+                                selectedRepresentation = rep;
+                                break;
                             }
-                            
-                            // Check for SegmentTimeline
-                            const timeline = segmentTemplate.querySelector('SegmentTimeline');
-                            if (timeline) {
-                                const sElements = timeline.querySelectorAll('S');
-                                let idx = startNumber;
-                                for (let s of sElements) {
-                                    const repeat = parseInt(s.getAttribute('r') || '0');
-                                    for (let i = 0; i <= repeat; i++) {
-                                        let segUrl = mediaTemplate.replace('$Number$', idx);
-                                        segUrl = segUrl.replace('$RepresentationID$', representation.getAttribute('id') || '');
-                                        segUrl = segUrl.replace('$Bandwidth$', representation.getAttribute('bandwidth') || '');
-                                        segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
-                                        segmentUrls.push(segUrl);
-                                        idx++;
-                                    }
-                                }
-                            } else {
-                                // Estimate segments (up to 500)
-                                for (let i = startNumber; i < startNumber + 500; i++) {
-                                    let segUrl = mediaTemplate.replace('$Number$', i);
-                                    segUrl = segUrl.replace('$RepresentationID$', representation.getAttribute('id') || '');
-                                    segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
-                                    segmentUrls.push(segUrl);
-                                }
-                            }
-                            break;
                         }
-                        
-                        // Check for SegmentList
-                        const segmentList = representation.querySelector('SegmentList');
-                        if (segmentList) {
-                            const segUrls = segmentList.querySelectorAll('SegmentURL');
-                            for (let seg of segUrls) {
-                                let mediaUrl = seg.getAttribute('media');
-                                mediaUrl = this.resolveUrl(mediaUrl, baseUrl, this.currentMpdUrl);
-                                segmentUrls.push(mediaUrl);
-                            }
-                            
-                            const initSeg = segmentList.querySelector('Initialization');
-                            if (initSeg && initSeg.getAttribute('sourceURL')) {
-                                initializationUrl = this.resolveUrl(initSeg.getAttribute('sourceURL'), baseUrl, this.currentMpdUrl);
-                            }
-                            break;
+                        if (!selectedRepresentation && representations.length > 0) {
+                            selectedRepresentation = representations[0];
                         }
+                        break;
                     }
                 }
-                if (segmentUrls.length > 0) break;
+                if (selectedRepresentation) break;
             }
             
-            if (segmentUrls.length === 0) {
-                throw new Error("No segment URLs extracted from MPD");
+            if (!selectedRepresentation) throw new Error('No representation found for selected quality');
+            
+            // Extract segment URLs
+            let segmentUrls = [];
+            let initializationUrl = null;
+            
+            let segmentTemplate = selectedRepresentation.querySelector('SegmentTemplate');
+            if (!segmentTemplate) {
+                const parentAs = selectedRepresentation.parentElement;
+                segmentTemplate = parentAs.querySelector('SegmentTemplate');
             }
             
-            this.log(`Extracted ${segmentUrls.length} segment URLs`);
-            if (initializationUrl) this.log(`Init URL: ${initializationUrl.substring(0, 80)}...`);
-            
-            // Download and merge all segments
-            let mergedBuffer = new Uint8Array(0);
-            
-            // Download initialization segment first
-            if (initializationUrl) {
-                if (this.downloadStatusText) this.downloadStatusText.innerText = 'Downloading initialization segment...';
-                try {
-                    const initData = await this.downloadSegmentWithToken(initializationUrl);
-                    mergedBuffer = this.concatBuffers(mergedBuffer, initData);
-                    this.log(`Init segment: ${initData.length} bytes`);
-                } catch (e) {
-                    this.log(`Init segment failed: ${e.message}, continuing...`);
-                }
-            }
-            
-            // Download all media segments
-            let downloaded = 0;
-            for (let i = 0; i < segmentUrls.length; i++) {
-                const segUrl = segmentUrls[i];
-                if (this.downloadStatusText) {
-                    this.downloadStatusText.innerText = `Downloading segment ${i+1}/${segmentUrls.length}`;
-                }
-                if (this.downloadProgressBar) {
-                    const percent = (i / segmentUrls.length) * 100;
-                    this.downloadProgressBar.style.width = `${percent}%`;
+            if (segmentTemplate) {
+                const mediaTemplate = segmentTemplate.getAttribute('media');
+                const initialization = segmentTemplate.getAttribute('initialization');
+                const startNumber = parseInt(segmentTemplate.getAttribute('startNumber') || '1');
+                
+                if (initialization) {
+                    let initUrl = initialization.replace('$RepresentationID$', selectedRepresentation.getAttribute('id') || '');
+                    initUrl = initUrl.replace('$Bandwidth$', selectedRepresentation.getAttribute('bandwidth') || '');
+                    initUrl = this.resolveUrl(initUrl, baseUrl, this.currentMpdUrl);
+                    initializationUrl = initUrl;
                 }
                 
+                const timeline = segmentTemplate.querySelector('SegmentTimeline');
+                if (timeline) {
+                    const sElements = timeline.querySelectorAll('S');
+                    let idx = startNumber;
+                    for (let s of sElements) {
+                        const repeat = parseInt(s.getAttribute('r') || '0');
+                        for (let i = 0; i <= repeat; i++) {
+                            let segUrl = mediaTemplate.replace('$Number$', idx);
+                            segUrl = segUrl.replace('$RepresentationID$', selectedRepresentation.getAttribute('id') || '');
+                            segUrl = segUrl.replace('$Bandwidth$', selectedRepresentation.getAttribute('bandwidth') || '');
+                            segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
+                            segmentUrls.push(segUrl);
+                            idx++;
+                        }
+                    }
+                } else {
+                    for (let i = startNumber; i < startNumber + 300; i++) {
+                        let segUrl = mediaTemplate.replace('$Number$', i);
+                        segUrl = segUrl.replace('$RepresentationID$', selectedRepresentation.getAttribute('id') || '');
+                        segUrl = this.resolveUrl(segUrl, baseUrl, this.currentMpdUrl);
+                        segmentUrls.push(segUrl);
+                    }
+                }
+            }
+            
+            if (segmentUrls.length === 0) throw new Error('No segments found');
+            
+            let mergedBuffer = new Uint8Array(0);
+            
+            if (initializationUrl) {
+                statusText.innerText = 'Downloading init segment...';
+                const initData = await this.downloadSegment(initializationUrl);
+                mergedBuffer = this.concatBuffers(mergedBuffer, initData);
+            }
+            
+            let downloaded = 0;
+            for (let i = 0; i < segmentUrls.length; i++) {
+                statusText.innerText = `Downloading segment ${i+1}/${segmentUrls.length}`;
+                const percent = (i / segmentUrls.length) * 100;
+                progressBar.style.width = `${percent}%`;
+                
                 try {
-                    const segData = await this.downloadSegmentWithToken(segUrl);
+                    const segData = await this.downloadSegment(segmentUrls[i]);
                     mergedBuffer = this.concatBuffers(mergedBuffer, segData);
                     downloaded++;
                 } catch (err) {
-                    this.log(`Segment ${i+1} failed: ${err.message}, stopping at ${downloaded} segments`);
+                    this.log(`Segment ${i+1} failed: ${err.message}`);
                     break;
                 }
             }
             
-            if (this.downloadProgressBar) this.downloadProgressBar.style.width = '100%';
-            if (this.downloadStatusText) {
-                this.downloadStatusText.innerText = `Creating video file from ${downloaded} segments...`;
-            }
+            progressBar.style.width = '100%';
+            statusText.innerText = `Creating file...`;
             
-            // Determine file extension
             const firstSeg = segmentUrls[0] || '';
             const isTs = firstSeg.includes('.ts') || firstSeg.endsWith('.ts');
             const extension = isTs ? 'ts' : 'mp4';
             const mimeType = isTs ? 'video/mp2t' : 'video/mp4';
             
-            // Create and trigger download
             const blob = new Blob([mergedBuffer], { type: mimeType });
             const downloadUrl = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            const fileName = this.currentVideoData?.title 
-                ? this.currentVideoData.title.replace(/[^a-z0-9]/gi, '_') 
-                : `video_${Date.now()}`;
-            a.download = `${fileName}_merged.${extension}`;
+            const fileName = this.currentVideoData?.title?.replace(/[^a-z0-9]/gi, '_') || `video_${selectedQuality}p`;
+            a.download = `${fileName}_${selectedQuality}p.${extension}`;
             a.href = downloadUrl;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(downloadUrl);
             
-            if (this.downloadStatusText) {
-                const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
-                this.downloadStatusText.innerText = `✅ Download complete! ${sizeMB} MB saved.`;
-            }
-            this.log(`✅ Download finished: ${downloaded}/${segmentUrls.length} segments merged, ${(blob.size / (1024*1024)).toFixed(2)} MB`);
-            this.updateStatus('success', 'Video downloaded & merged!');
+            const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+            statusText.innerText = `✅ Complete! ${sizeMB} MB saved`;
+            this.log(`Downloaded ${downloaded}/${segmentUrls.length} segments, ${sizeMB} MB`);
             
         } catch (error) {
-            this.log("Download error:", error);
-            if (this.downloadStatusText) {
-                this.downloadStatusText.innerText = `❌ Error: ${error.message}`;
-            }
-            this.updateStatus('error', `Download failed: ${error.message}`);
+            statusText.innerText = `❌ Error: ${error.message}`;
+            this.log('Download error:', error);
         } finally {
-            if (this.downloadBtn) this.downloadBtn.disabled = false;
+            this.downloadBtn.disabled = false;
             setTimeout(() => {
-                if (this.progressArea) this.progressArea.style.display = 'none';
+                progressArea.style.display = 'none';
             }, 5000);
         }
     }
     
-    async downloadSegmentWithToken(url) {
+    async downloadSegment(url) {
         const separator = url.includes('?') ? '&' : '?';
         const urlWithToken = `${url}${separator}token=${encodeURIComponent(this.currentToken)}`;
         
@@ -469,26 +483,19 @@ class DRMVideoPlayer {
             }
         });
         
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-        
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return new Uint8Array(await response.arrayBuffer());
     }
     
     resolveUrl(relativeUrl, baseUrl, mpdBaseUrl) {
         if (!relativeUrl) return '';
-        if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) {
-            return relativeUrl;
-        }
+        if (relativeUrl.startsWith('http://') || relativeUrl.startsWith('https://')) return relativeUrl;
         
-        // Try baseUrl from MPD
         if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
             const basePath = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
             return basePath + relativeUrl;
         }
         
-        // Fallback to MPD directory
         const mpdPath = mpdBaseUrl.substring(0, mpdBaseUrl.lastIndexOf('/') + 1);
         return mpdPath + relativeUrl;
     }
@@ -500,33 +507,147 @@ class DRMVideoPlayer {
         return result;
     }
     
-    handleShakaError(error) {
-        this.log('Shaka Error:', error);
-        
-        let errorMessage = '';
-        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
-        
-        switch(errorCode) {
-            case 6001:
-                errorMessage = 'Manifest request failed - Token may be invalid or expired';
-                this.log('💡 Make sure token is added to MPD URL');
-                break;
-            case 6007:
-                errorMessage = 'License request failed - Token may be expired or invalid';
-                this.log('💡 Check if token is valid');
-                this.log('💡 Verify license server is accessible: ' + this.licenseServerUrl);
-                break;
-            case 6012:
-                errorMessage = 'License server not configured';
-                break;
-            case 1002:
-                errorMessage = 'Network error - Check CORS or server availability';
-                break;
-            default:
-                errorMessage = error.detail?.message || error.message || 'Unknown error';
+    // Custom controls methods
+    togglePlayPause() {
+        if (this.videoElement.paused) {
+            this.videoElement.play();
+        } else {
+            this.videoElement.pause();
         }
+    }
+    
+    updateProgress() {
+        if (this.videoElement.duration) {
+            const percent = (this.videoElement.currentTime / this.videoElement.duration) * 100;
+            this.seekSlider.value = percent;
+            this.progressFilled.style.width = `${percent}%`;
+            this.currentTimeSpan.textContent = this.formatTime(this.videoElement.currentTime);
+        }
+    }
+    
+    updateBuffer() {
+        if (this.videoElement.buffered.length > 0) {
+            const bufferedEnd = this.videoElement.buffered.end(this.videoElement.buffered.length - 1);
+            const duration = this.videoElement.duration;
+            const percent = (bufferedEnd / duration) * 100;
+            this.progressBuffer.style.width = `${percent}%`;
+        }
+    }
+    
+    onVideoLoaded() {
+        this.durationSpan.textContent = this.formatTime(this.videoElement.duration);
+        this.seekSlider.max = 100;
+    }
+    
+    seek(value) {
+        const time = (value / 100) * this.videoElement.duration;
+        this.videoElement.currentTime = time;
+    }
+    
+    setVolume(value) {
+        this.videoElement.volume = parseFloat(value);
+        this.updateVolumeIcon();
+    }
+    
+    toggleMute() {
+        this.videoElement.muted = !this.videoElement.muted;
+        this.updateVolumeIcon();
+    }
+    
+    updateVolumeIcon() {
+        if (this.videoElement.muted || this.videoElement.volume === 0) {
+            this.volumeBtn.textContent = '🔇';
+        } else if (this.videoElement.volume < 0.5) {
+            this.volumeBtn.textContent = '🔉';
+        } else {
+            this.volumeBtn.textContent = '🔊';
+        }
+        this.volumeSlider.value = this.videoElement.volume;
+    }
+    
+    setPlaybackRate(rate) {
+        this.videoElement.playbackRate = parseFloat(rate);
+        this.log(`Playback speed: ${rate}x`);
+    }
+    
+    async togglePictureInPicture() {
+        try {
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
+            } else {
+                await this.videoElement.requestPictureInPicture();
+            }
+        } catch (error) {
+            this.log('PiP error:', error);
+        }
+    }
+    
+    toggleRotate() {
+        const wrapper = document.querySelector('.video-wrapper');
+        this.isRotated = !this.isRotated;
+        if (this.isRotated) {
+            wrapper.style.transform = 'rotate(90deg)';
+            wrapper.style.aspectRatio = '9/16';
+        } else {
+            wrapper.style.transform = '';
+            wrapper.style.aspectRatio = '16/9';
+        }
+    }
+    
+    toggleLock() {
+        const controls = document.getElementById('customControls');
+        this.isLocked = !this.isLocked;
         
-        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
+        if (this.isLocked) {
+            controls.style.opacity = '0';
+            controls.style.pointerEvents = 'none';
+            this.lockBtn.textContent = '🔓';
+            this.showToast('Screen Locked');
+        } else {
+            controls.style.opacity = '';
+            controls.style.pointerEvents = '';
+            this.lockBtn.textContent = '🔒';
+            this.showToast('Screen Unlocked');
+        }
+    }
+    
+    toggleFullscreen() {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen();
+        } else {
+            document.exitFullscreen();
+        }
+    }
+    
+    formatTime(seconds) {
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        
+        if (hrs > 0) {
+            return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+    
+    showToast(message) {
+        const toast = document.createElement('div');
+        toast.textContent = message;
+        toast.style.cssText = `
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 1000;
+            animation: fadeOut 2s forwards;
+        `;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
     }
     
     updateVideoInfo(videoData) {
@@ -538,7 +659,7 @@ class DRMVideoPlayer {
                 <div><strong>📺 Ads:</strong> ${videoData.ad_enable ? 'Yes' : 'No'} | 
                      <strong>VR:</strong> ${videoData.is_vr_video ? 'Yes' : 'No'} | 
                      <strong>Live:</strong> ${videoData.live_status === 0 ? 'VOD' : 'Live'}</div>
-                <div><strong>⬇ Download:</strong> Click green button after video loads</div>
+                <div><strong>⬇ Download:</strong> Select quality from download section</div>
             </div>
         `;
         this.videoInfo.innerHTML = html;
@@ -554,8 +675,26 @@ class DRMVideoPlayer {
                                                type === 'success' ? '#28a745' : '#667eea';
     }
     
+    handleShakaError(error) {
+        this.log('Shaka Error:', error);
+        let errorMessage = '';
+        let errorCode = error.code || (error.detail ? error.detail.code : 'Unknown');
+        
+        switch(errorCode) {
+            case 6001:
+                errorMessage = 'Manifest request failed - Token may be invalid';
+                break;
+            case 6007:
+                errorMessage = 'License request failed - Token expired';
+                break;
+            default:
+                errorMessage = error.detail?.message || error.message || 'Unknown error';
+        }
+        
+        this.updateStatus('error', `Error ${errorCode}: ${errorMessage}`);
+    }
+    
     handleError(error) {
-        console.error('Error:', error);
         let errorMessage = error instanceof Error ? error.message : String(error);
         this.updateStatus('error', `Error: ${errorMessage}`);
         this.log('ERROR:', errorMessage);
@@ -573,8 +712,8 @@ class DRMVideoPlayer {
         this.debugLog.textContent = currentLog + '\n' + logMessage;
         
         const lines = this.debugLog.textContent.split('\n');
-        if (lines.length > 150) {
-            this.debugLog.textContent = lines.slice(-150).join('\n');
+        if (lines.length > 200) {
+            this.debugLog.textContent = lines.slice(-200).join('\n');
         }
     }
     
@@ -601,3 +740,14 @@ window.addEventListener('DOMContentLoaded', () => {
         document.head.appendChild(script);
     }
 });
+
+// Add animation keyframes
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes fadeOut {
+        0% { opacity: 1; }
+        70% { opacity: 1; }
+        100% { opacity: 0; visibility: hidden; }
+    }
+`;
+document.head.appendChild(style);

@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>DRM Video Player - MPD Stream</title>
+    <title>Ultimate DRM Video Player - Full Features</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.13/dist/shaka-player.compiled.js"></script>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎬 DRM Video Player</h1>
-            <p>MPD Stream with Widevine Support</p>
+            <h1>🎬 Ultimate DRM Video Player</h1>
+            <p>MPD Stream with Widevine | Full Controls + Download Manager</p>
         </div>
 
         <div class="input-section">
             <label for="apiUrl">🔗 Enter API URL:</label>
             <div class="input-group">
-                <input type="text" id="apiUrl" placeholder="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740" value="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
+                <input type="text" id="apiUrl" placeholder="Enter API URL here" value="https://bypass-pearl-tau.vercel.app/api/proxy?url=https://jgxgc.vercel.app/api/get_video_details?name=4716251_0_4981670265767740">
                 <button id="loadBtn" class="btn-primary">▶ Load Video</button>
             </div>
         </div>
@@ -25,7 +25,56 @@
         <div class="player-container" id="playerContainer" style="display: none;">
             <div class="video-wrapper">
                 <video id="videoPlayer" controls playsinline></video>
+                
+                <!-- Custom Controls Overlay -->
+                <div class="custom-controls" id="customControls">
+                    <div class="controls-top">
+                        <div class="video-title" id="videoTitle">Loading...</div>
+                        <div class="controls-top-buttons">
+                            <button class="ctrl-btn" id="pipBtn" title="Picture in Picture">📺</button>
+                            <button class="ctrl-btn" id="rotateBtn" title="Rotate">🔄</button>
+                            <button class="ctrl-btn" id="lockBtn" title="Lock Screen">🔒</button>
+                        </div>
+                    </div>
+                    
+                    <div class="controls-bottom">
+                        <div class="progress-container">
+                            <div class="progress-bar-bg">
+                                <div class="progress-filled" id="progressFilled"></div>
+                                <div class="progress-buffer" id="progressBuffer"></div>
+                            </div>
+                            <input type="range" class="seek-slider" id="seekSlider" value="0" min="0" step="0.01">
+                        </div>
+                        
+                        <div class="controls-bottom-row">
+                            <div class="left-controls">
+                                <button class="ctrl-btn" id="playPauseBtn">▶</button>
+                                <div class="time-display">
+                                    <span id="currentTime">0:00</span> / <span id="duration">0:00</span>
+                                </div>
+                            </div>
+                            
+                            <div class="right-controls">
+                                <select id="qualitySelect" class="quality-select">
+                                    <option value="auto">Auto Quality</option>
+                                </select>
+                                <select id="speedSelect" class="speed-select">
+                                    <option value="0.5">0.5x</option>
+                                    <option value="0.75">0.75x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="1.25">1.25x</option>
+                                    <option value="1.5">1.5x</option>
+                                    <option value="2">2x</option>
+                                </select>
+                                <button class="ctrl-btn" id="volumeBtn">🔊</button>
+                                <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.01" value="1">
+                                <button class="ctrl-btn" id="fullscreenBtn">⛶</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
+            
             <div class="video-info" id="videoInfo"></div>
         </div>
 
@@ -33,6 +82,26 @@
             <div class="status" id="status">
                 <div class="status-icon">⏳</div>
                 <div class="status-text">Ready to load video...</div>
+            </div>
+        </div>
+
+        <!-- Download Section -->
+        <div class="download-section" id="downloadSection" style="display: none;">
+            <div class="download-header">
+                <h3>⬇ Download Video</h3>
+                <p>Select quality and download all segments merged into one file</p>
+            </div>
+            <div class="download-controls">
+                <select id="downloadQualitySelect" class="quality-select">
+                    <option value="">Select quality to download...</option>
+                </select>
+                <button id="downloadBtn" class="btn-primary btn-download">⬇ Download Merged Video</button>
+            </div>
+            <div id="downloadProgressArea" style="margin-top: 12px; display: none;">
+                <div style="font-size: 13px; color: #495057; margin-bottom: 5px;" id="downloadStatusText">Preparing download...</div>
+                <div class="download-progress">
+                    <div class="progress-bar" id="downloadProgressBar"></div>
+                </div>
             </div>
         </div>
 
